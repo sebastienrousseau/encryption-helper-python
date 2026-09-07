@@ -118,29 +118,80 @@ def _emit(args: argparse.Namespace, human: str, payload: dict[str, Any]) -> None
 
 
 def _passphrase_from_source(args: argparse.Namespace) -> bytes | None:
-    """Read a passphrase from an environment variable or a file.
+    r"""Read a passphrase from an environment variable or a file.
+
+    Neither source is echoed back on failure. An error says *which* source was
+    unusable and why, never what it contained.
+
+    **Environment variable.** Taken verbatim, apart from a whitespace-only
+    value being rejected: that is almost always an unset-variable accident,
+    and it offers no protection. A value with meaningful leading or trailing
+    spaces is preserved.
+
+    **File.** Exactly one trailing newline is removed -- ``LF`` or ``CRLF`` --
+    because a text editor appends one and a user who types ``secret`` into a
+    file means ``secret``. Nothing else is stripped, so a passphrase may
+    legitimately begin or end with a space, contain internal newlines, or not
+    be valid UTF-8.
 
     Returns:
         The passphrase, or :data:`None` if neither source was requested.
 
     Raises:
-        SystemExit: If the named source is missing or empty.
+        SystemExit: If the named source is missing, empty, or unusable.
     """
     if getattr(args, "passphrase_env", None):
         value = os.environ.get(args.passphrase_env)
-        if not value:
+        if value is None:
+            _fail_usage(f"Environment variable {args.passphrase_env} is not set.")
+        if not value.strip():
             _fail_usage(
-                f"Environment variable {args.passphrase_env} is unset or empty."
+                f"Environment variable {args.passphrase_env} is empty or "
+                "contains only whitespace, which would not protect the key."
             )
         return value.encode()
 
     if getattr(args, "passphrase_file", None):
-        data = read_bytes(args.passphrase_file).strip()
-        if not data:
-            _fail_usage(f"Passphrase file {args.passphrase_file} is empty.")
+        data = _strip_one_trailing_newline(read_bytes(args.passphrase_file))
+        if not data.strip():
+            _fail_usage(
+                f"Passphrase file {args.passphrase_file} is empty or contains "
+                "only whitespace, which would not protect the key."
+            )
         return data
 
     return None
+
+
+def _strip_one_trailing_newline(data: bytes) -> bytes:
+    r"""Remove a single trailing ``LF`` or ``CRLF``, and nothing else.
+
+    Args:
+        data: Raw file contents.
+
+    Returns:
+        The contents without one trailing line ending.
+
+    Example:
+        >>> _strip_one_trailing_newline(b"secret
+    ")
+        b'secret'
+        >>> _strip_one_trailing_newline(b"secret
+    ")
+        b'secret'
+        >>> _strip_one_trailing_newline(b"secret
+
+    ")
+        b'secret
+    '
+        >>> _strip_one_trailing_newline(b" secret ")
+        b' secret '
+    """
+    if data.endswith(b"\r\n"):
+        return data[:-2]
+    if data.endswith(b"\n"):
+        return data[:-1]
+    return data
 
 
 def _interactive() -> bool:
@@ -303,11 +354,6 @@ def _cmd_keygen(args: argparse.Namespace) -> int:
         "owner-only permissions; keep it that way, and never commit it or "
         "paste it into a chat or ticket."
     )
-    if not result.private_key_encrypted:
-        warning += (
-            "\nIt is NOT encrypted, because --no-passphrase was given. "
-            "Anything that can read the file has the key."
-        )
 
     size = f"{result.key_size} bits" if result.key_size else "n/a"
     human = (
@@ -317,9 +363,23 @@ def _cmd_keygen(args: argparse.Namespace) -> int:
         f"Private key: {result.private_key_path}\n"
         f"Public key:  {result.public_key_path}\n"
         f"Fingerprint: {result.fingerprint}\n"
-        f"Encrypted:   {'yes' if result.private_key_encrypted else 'no'}\n"
-        f"\n{warning}"
+        f"Encrypted:   {'yes' if result.private_key_encrypted else 'no'}"
     )
+
+    # Custody warnings go to stderr, so they survive stdout being redirected
+    # to a file or parsed as JSON, while --quiet still silences them for
+    # automation that has already made an informed choice.
+    if not args.quiet:
+        print(warning, file=sys.stderr)
+        if not result.private_key_encrypted:
+            print(
+                "\nWARNING: the private key is stored UNENCRYPTED because "
+                "--no-passphrase was given.\n"
+                "         Anything that can read the file has the key. "
+                "Protect it with\n"
+                "         filesystem permissions, and do not copy it.",
+                file=sys.stderr,
+            )
     _emit(
         args,
         human,
@@ -431,8 +491,9 @@ def _add_passphrase_flags(parser: argparse.ArgumentParser) -> None:
         "--passphrase-file",
         metavar="PATH",
         help=(
-            "Read the passphrase from this file. Trailing whitespace is "
-            "stripped. Keep the file mode 0600."
+            "Read the passphrase from this file. Exactly one trailing newline "
+            "is removed; no other whitespace is stripped, so a passphrase may "
+            "begin or end with a space. Keep the file mode 0600."
         ),
     )
 
