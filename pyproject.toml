@@ -4,11 +4,13 @@ build-backend = "poetry.core.masonry.api"
 
 [project]
 name = "encryption-helper"
-version = "0.1.0"
+version = "0.0.2"
 description = "A Python library and CLI for generating, protecting and using asymmetric key pairs"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "HSBC Open Source", email = "opensource@hsbc.com" }]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 maintainers = [{ name = "HSBC Open Source", email = "opensource@hsbc.com" }]
 keywords = [
     "rsa",
@@ -22,14 +24,6 @@ keywords = [
     "signing",
     "cli",
 ]
-
-# NOTE: The `license` field and its trailing classifier are intentionally
-# absent. The repository's LICENSE file is Apache-2.0 while the previous
-# metadata declared MIT in four places. Asserting either one here would make a
-# legal claim that contradicts the other. This is tracked as finding C1 /
-# task 0.1 in docs/IMPLEMENTATION_PLAN.md and MUST be resolved by HSBC Open
-# Source before any release. Restore `license = { text = "..." }` and the
-# matching "License :: OSI Approved :: ..." classifier at that point.
 
 classifiers = [
     "Development Status :: 3 - Alpha",

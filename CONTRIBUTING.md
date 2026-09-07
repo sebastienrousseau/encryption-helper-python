@@ -119,6 +119,6 @@ Maintainers only:
 
 1. Update `CHANGELOG.md`, moving `Unreleased` to the new version.
 2. Bump `version` in `pyproject.toml` — the only place a version is written.
-3. Merge, then push a signed tag: `git tag -s v0.1.0 && git push --tags`.
+3. Merge, then push a signed tag: `git tag -s v0.0.2 && git push --tags`.
 4. The release workflow builds, attests provenance, and publishes to PyPI via
    Trusted Publishing. No token is handled by a human.

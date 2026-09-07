@@ -8,7 +8,7 @@ them with priority.
 
 | Version | Supported | Notes |
 | ------- | --------- | ----- |
-| 0.1.x   | :white_check_mark: | Current release line |
+| 0.0.2   | :white_check_mark: | Current release line |
 | 0.0.1   | :x: | **Withdrawn — see the advisory below. Rotate any key it generated.** |
 
 ## Reporting a vulnerability

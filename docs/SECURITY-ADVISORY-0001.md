@@ -4,7 +4,7 @@
 | ----- | ----- |
 | Identifier | `SECURITY-ADVISORY-0001` |
 | Affected versions | `<= 0.0.1` (all commits up to and including `6bfd51d`) |
-| Fixed in | `0.1.0` |
+| Fixed in | `0.0.2` |
 | Severity | **High** |
 | Impact | Disclosure of RSA private key material |
 | Action required | **Rotate every key pair generated with an affected version.** |
@@ -67,7 +67,7 @@ resulting key.
 
 ## Remediation
 
-1. **Upgrade** to `0.1.0` or later.
+1. **Upgrade** to `0.0.2` or later.
 2. **Rotate.** Generate a fresh key pair and replace the old one everywhere it
    is trusted — certificates, `authorized_keys`, JWT verification, service
    configuration, partner integrations.
@@ -80,7 +80,7 @@ resulting key.
 Deleting the key file alone is not sufficient — assume any copy that reached a
 log or another user's view is already retained elsewhere.
 
-## Fixes in 0.1.0
+## Fixes in 0.0.2
 
 - Private keys are created with `O_EXCL` at mode `0600`, and the containing
   directory at `0700`.
