@@ -15,6 +15,10 @@
 # Usage:
 #   scripts/verify-release-candidate.sh [--allow-dirty]
 #
+# Scratch space defaults to build/ inside the repository rather than $TMPDIR,
+# because building and installing into two virtualenvs needs a few hundred MB
+# and /tmp is a small tmpfs on many systems. Override with RC_WORKDIR.
+#
 # Exits non-zero on the first failure. Writes a provenance record to
 # build/release-candidate-<sha>.txt for attachment to the remediation review.
 
@@ -47,9 +51,16 @@ echo "commit : $HEAD_SHA"
 echo "branch : $BRANCH"
 echo "clean  : $([[ -z "$DIRT" ]] && echo yes || echo NO)"
 
-WORKDIR="$(mktemp -d)"
-trap 'rm -rf "$WORKDIR"' EXIT
 mkdir -p build
+WORKDIR="$(mktemp -d "${RC_WORKDIR:-$REPO_ROOT/build}/eh-rc-XXXXXX")"
+trap 'rm -rf "$WORKDIR"' EXIT
+echo "workdir: $WORKDIR"
+AVAIL_KB="$(df -Pk "$WORKDIR" | awk 'NR==2 {print $4}')"
+if [[ "$AVAIL_KB" -lt 524288 ]]; then
+  echo "ERROR: only $((AVAIL_KB / 1024)) MB free at $WORKDIR; need ~512 MB." >&2
+  echo "       Set RC_WORKDIR to a roomier location." >&2
+  exit 1
+fi
 
 # --- 2. Build from the exact commit -----------------------------------------
 
