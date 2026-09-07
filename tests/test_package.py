@@ -111,3 +111,40 @@ class TestTypeMarker:
         from pathlib import Path
 
         assert (Path(encryption_helper.__file__).parent / "py.typed").is_file()
+
+
+class TestModuleEntryPoint:
+    """`python -m encryption_helper` executes the same code as the script.
+
+    The subprocess tests prove this works end to end, but a subprocess is
+    invisible to in-process coverage. `runpy` executes the module body --
+    including the `if __name__ == "__main__"` guard -- in this interpreter.
+    """
+
+    def test_module_execution_dispatches_to_the_cli(self, monkeypatch, capsys):
+        import runpy
+
+        monkeypatch.setattr(sys, "argv", ["encryption-helper", "--version"])
+        with pytest.raises(SystemExit) as excinfo:
+            runpy.run_module("encryption_helper", run_name="__main__")
+
+        assert excinfo.value.code == 0
+        assert "encryption-helper" in capsys.readouterr().out
+
+    def test_module_execution_propagates_the_exit_code(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        import runpy
+
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["encryption-helper", "keygen", "--out-dir", str(tmp_path)],
+        )
+        monkeypatch.setattr("encryption_helper.cli._interactive", lambda: False)
+        with pytest.raises(SystemExit) as excinfo:
+            runpy.run_module("encryption_helper", run_name="__main__")
+
+        # Refusing to write an unencrypted key without consent is exit 2.
+        assert excinfo.value.code == 2
+        assert "unencrypted" in capsys.readouterr().err

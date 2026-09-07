@@ -18,7 +18,7 @@
   <a href="https://pypi.org/project/encryption-helper/"><img src="https://img.shields.io/pypi/v/encryption-helper.svg" alt="PyPI version"></a>
   <a href="https://pypi.org/project/encryption-helper/"><img src="https://img.shields.io/pypi/pyversions/encryption-helper.svg" alt="Supported Python versions"></a>
   <a href="https://api.securityscorecards.dev/projects/github.com/hsbc/encryption-helper-python"><img src="https://api.securityscorecards.dev/projects/github.com/hsbc/encryption-helper-python/badge" alt="OpenSSF Scorecard"></a>
-  <img src="https://img.shields.io/badge/coverage-98%25-brightgreen.svg" alt="Coverage">
+  <img src="https://img.shields.io/badge/coverage-100%25-brightgreen.svg" alt="Coverage">
   <img src="https://img.shields.io/badge/types-mypy%20strict-blue.svg" alt="mypy strict">
 </p>
 
@@ -296,7 +296,8 @@ except DecryptionError:
 | `KeyGenerationError` | The backend failed to generate a key. |
 | `KeyExistsError` | A destination exists and overwriting was not requested. |
 | `KeyPairValidationError` | A generated pair failed its self-check; nothing was written. |
-| `KeyWriteError` / `KeyReadError` | Key material could not be written / read. |
+| `KeyWriteError` | Key material could not be written to disk. |
+| `KeyReadError` | Key material could not be read or parsed, including a wrong passphrase. |
 | `DecryptionError` | A ciphertext failed to decrypt or failed its integrity check. |
 | `SignatureVerificationError` | A signature did not verify. |
 
@@ -380,6 +381,21 @@ poetry run ruff format --check .      # formatting
 poetry run mypy --strict encryption_helper
 poetry run bandit -c pyproject.toml -r encryption_helper
 ```
+
+### Examples, benchmarks and fuzzing
+
+```bash
+python examples/01_generate_key_pair.py    # all four run in CI
+python benches/bench_crypto.py --quick     # indicative timings, not a gate
+python fuzz/run_fuzz.py --iterations 50000 # no fuzzing engine required
+```
+
+`examples/` is executed by CI, so an example that stops working fails the
+build. `fuzz/` targets the two parsers that accept untrusted input --
+`decrypt()` and the key loaders -- and asserts they fail closed with a typed
+error for any input; see [fuzz/README.md](./fuzz/README.md). Atheris entry
+points are provided for coverage-guided runs, but the standalone runner is
+what CI uses because it needs no engine and no compiler.
 
 Full contributor guide: [CONTRIBUTING.md](./CONTRIBUTING.md).
 

@@ -206,3 +206,41 @@ class TestResultMetadata:
         result = store.write_key_pair(ed25519_key, "relative")
         assert result.private_key_path.is_absolute()
         assert result.private_key_path == tmp_path / "relative" / "key.pem"
+
+
+class TestUndoBranches:
+    def test_undo_is_a_noop_when_the_write_replaced_something_it_cannot_restore(
+        self, tmp_path
+    ):
+        """A replaced outcome with no backup must not delete the live file."""
+        from encryption_helper._io import WriteOutcome
+
+        target = tmp_path / "key.pem"
+        target.write_bytes(b"live")
+        store._undo(
+            WriteOutcome(path=target, backup=None, replaced=True, backup_mode=None)
+        )
+        assert target.read_bytes() == b"live", "undo deleted a file it did not create"
+
+    def test_undo_removes_a_file_it_created(self, tmp_path):
+        from encryption_helper._io import WriteOutcome
+
+        target = tmp_path / "key.pem"
+        target.write_bytes(b"new")
+        store._undo(
+            WriteOutcome(path=target, backup=None, replaced=False, backup_mode=None)
+        )
+        assert not target.exists()
+
+    def test_undo_restores_a_backup_without_a_recorded_mode(self, tmp_path):
+        from encryption_helper._io import WriteOutcome
+
+        target = tmp_path / "key.pem"
+        backup = tmp_path / "key.pem.bak"
+        target.write_bytes(b"new")
+        backup.write_bytes(b"old")
+        store._undo(
+            WriteOutcome(path=target, backup=backup, replaced=True, backup_mode=None)
+        )
+        assert target.read_bytes() == b"old"
+        assert not backup.exists()
