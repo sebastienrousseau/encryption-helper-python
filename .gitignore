@@ -137,3 +137,4 @@ id_ecdsa*
 # Explicitly allow non-secret fixtures used by the test suite.
 !tests/fixtures/**/*.pem
 !tests/fixtures/**/*.der
+build/
