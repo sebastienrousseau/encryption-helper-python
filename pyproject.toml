@@ -183,6 +183,13 @@ convention = "google"
 [tool.ruff.lint.per-file-ignores]
 # The CLI is the one place presentation belongs, so printing is expected.
 "encryption_helper/cli.py" = ["T201"]
+# Examples, benchmarks and fuzz harnesses are standalone scripts. Printing is
+# their entire output mechanism, and they are executed rather than imported.
+"examples/**" = ["T201", "INP001", "S101", "PLR2004"]
+"benches/**" = ["T201", "INP001"]
+# `atheris` is imported lazily and inside a function: it is an optional
+# fuzzing engine, and the module must remain importable without it.
+"fuzz/**" = ["T201", "INP001", "S101", "PLC0415"]
 # Tests are linted with the same ruleset as the source, minus a short list of
 # relaxations that are idiomatic in a test suite. This is deliberately narrow:
 # the previous configuration excluded `tests/*` from flake8 entirely and set

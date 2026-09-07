@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `examples/` -- four runnable, CI-executed examples covering key generation
+  and storage, hybrid encryption, signing, and loading and format conversion.
+- `benches/bench_crypto.py` -- dependency-free benchmarks for generation,
+  encryption, signing, serialisation and storage. Indicative timings, not a
+  regression gate.
+- `fuzz/` -- fuzz targets for `decrypt()` and the key loaders, with a
+  standalone runner needing no fuzzing engine plus optional Atheris entry
+  points. Both harnesses were themselves mutation-tested: planting a defect is
+  detected within two iterations, with a reproducible seed.
+- `tests/test_documentation_accuracy.py` -- asserts the README matches the
+  implementation: every documented flag and subcommand exists, exit codes and
+  error tables match the code, the stated key sizes and curves are accepted,
+  cryptographic claims match the constructions used, licence declarations
+  agree, and every relative link resolves.
+
+### Changed
+
+- Test coverage is now 100% of statements and branches, gated at 95%.
+
+### Fixed
+
+- README documented `KeyWriteError` and `KeyReadError` in a single combined
+  table row, so neither was individually described.
+
+### Known issues
+
+- `--json` combined with `--out -` interleaves the JSON report and binary
+  output on stdout, making the JSON impractical to parse. Use `--out FILE`
+  with `--json`. Tracked for a future release.
+
 ## [0.0.2] — Unreleased
 
 This release is a rewrite. It fixes vulnerabilities that exposed private key

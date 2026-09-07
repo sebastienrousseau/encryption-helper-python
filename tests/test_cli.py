@@ -818,3 +818,201 @@ class TestUnexpectedErrors:
         assert secret_detail not in captured.out
         assert secret_detail not in captured.err
         assert "unexpected internal error" in captured.err
+
+
+class TestStdoutOutput:
+    """The `--out -` path, exercised in-process.
+
+    The pipeline tests drive this through a subprocess, which proves the
+    behaviour but leaves the branch unmeasured. This covers it directly.
+    """
+
+    def test_encrypt_to_stdout(self, tmp_path, keypair, capsysbinary):
+        _, public = keypair
+        (tmp_path / "m.txt").write_bytes(b"payload")
+        assert (
+            main(
+                [
+                    "encrypt",
+                    "--public-key",
+                    str(public),
+                    "--in",
+                    str(tmp_path / "m.txt"),
+                    "--out",
+                    "-",
+                ]
+            )
+            == EXIT_OK
+        )
+        out = capsysbinary.readouterr().out
+        assert out.startswith(b"EHEV"), "container magic missing from stdout"
+
+    def test_round_trip_entirely_through_stdout(self, tmp_path, keypair, capsysbinary):
+        private, public = keypair
+        (tmp_path / "m.txt").write_bytes(b"payload")
+        main(
+            [
+                "--quiet",
+                "encrypt",
+                "--public-key",
+                str(public),
+                "--in",
+                str(tmp_path / "m.txt"),
+                "--out",
+                "-",
+            ]
+        )
+        blob = capsysbinary.readouterr().out
+        (tmp_path / "m.bin").write_bytes(blob)
+
+        main(
+            [
+                "--quiet",
+                "decrypt",
+                "--private-key",
+                str(private),
+                "--in",
+                str(tmp_path / "m.bin"),
+                "--out",
+                "-",
+            ]
+        )
+        assert capsysbinary.readouterr().out == b"payload"
+
+    def test_json_and_stdout_output_share_the_stream(
+        self, tmp_path, keypair, capsysbinary
+    ):
+        """Documents a known wart, so a future fix is a deliberate change.
+
+        `--json` writes its report to stdout and `--out -` writes ciphertext
+        to stdout, so combining them interleaves binary and JSON on one
+        stream. The JSON is still emitted, but a consumer piping to `jq` gets
+        garbage. Tracked as a post-0.0.2 finding; the workaround is to use
+        `--out FILE` with `--json`.
+        """
+        _, public = keypair
+        (tmp_path / "m.txt").write_bytes(b"payload")
+        main(
+            [
+                "--json",
+                "encrypt",
+                "--public-key",
+                str(public),
+                "--in",
+                str(tmp_path / "m.txt"),
+                "--out",
+                "-",
+            ]
+        )
+        raw = capsysbinary.readouterr().out
+        assert raw.startswith(b"EHEV"), "ciphertext missing"
+        # The report is the trailing object; a `{` byte can occur anywhere in
+        # the ciphertext, so search from the end rather than the start.
+        payload = json.loads(raw[raw.rindex(b"{") :].decode())
+        assert payload["output"] == "<stdout>"
+
+
+class TestExplicitPassphraseWhenLoading:
+    """Supplying a passphrase source for an existing key skips the prompt."""
+
+    @pytest.fixture
+    def encrypted_key(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("EH_LOAD", "load-secret")
+        main(
+            [
+                "keygen",
+                "--out-dir",
+                str(tmp_path),
+                "--key-size",
+                "2048",
+                "--passphrase-env",
+                "EH_LOAD",
+            ]
+        )
+        return tmp_path / "key.pem", tmp_path / "key.pub.pem"
+
+    def test_sign_with_explicit_env_passphrase(
+        self, tmp_path, encrypted_key, monkeypatch
+    ):
+        private, public = encrypted_key
+
+        def must_not_prompt(_prompt):
+            msg = "an explicit passphrase source must not trigger a prompt"
+            raise AssertionError(msg)
+
+        monkeypatch.setattr("getpass.getpass", must_not_prompt)
+        (tmp_path / "m.txt").write_bytes(b"data")
+
+        assert (
+            main(
+                [
+                    "-q",
+                    "sign",
+                    "--private-key",
+                    str(private),
+                    "--passphrase-env",
+                    "EH_LOAD",
+                    "--in",
+                    str(tmp_path / "m.txt"),
+                    "--out",
+                    str(tmp_path / "m.sig"),
+                ]
+            )
+            == EXIT_OK
+        )
+        assert (
+            main(
+                [
+                    "verify",
+                    "--public-key",
+                    str(public),
+                    "--signature",
+                    str(tmp_path / "m.sig"),
+                    "--in",
+                    str(tmp_path / "m.txt"),
+                ]
+            )
+            == EXIT_OK
+        )
+
+    def test_wrong_explicit_passphrase_fails_without_prompting(
+        self, tmp_path, encrypted_key, monkeypatch, capsys
+    ):
+        private, _ = encrypted_key
+        monkeypatch.setenv("EH_WRONG", "not-the-passphrase")
+        (tmp_path / "m.txt").write_bytes(b"data")
+
+        code = main(
+            [
+                "sign",
+                "--private-key",
+                str(private),
+                "--passphrase-env",
+                "EH_WRONG",
+                "--in",
+                str(tmp_path / "m.txt"),
+                "--out",
+                str(tmp_path / "m.sig"),
+            ]
+        )
+        assert code == EXIT_ERROR
+        err = capsys.readouterr().err
+        assert "Could not load the private key" in err
+        assert "not-the-passphrase" not in err
+
+
+class TestWindowsPermissionGuard:
+    def test_permission_warning_is_skipped_on_windows(self, tmp_path, monkeypatch):
+        """Unix mode bits do not describe an NTFS ACL; do not pretend."""
+        import encryption_helper.cli as cli_module
+
+        secret_file = tmp_path / "pass.txt"
+        secret_file.write_bytes(b"secret")
+        secret_file.chmod(0o644)
+        monkeypatch.setattr(cli_module.sys, "platform", "win32")
+
+        def must_not_stat(_self):
+            msg = "mode must not be inspected on Windows"
+            raise AssertionError(msg)
+
+        cli_module._warn_if_passphrase_file_is_readable(secret_file)

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import stat
+from pathlib import Path
 
 import pytest
 from encryption_helper._io import (
@@ -212,3 +213,90 @@ class TestFailurePaths:
         monkeypatch.setattr("pathlib.Path.read_bytes", boom)
         with pytest.raises(KeyReadError, match="Could not read"):
             read_bytes(target)
+
+
+class TestPlatformBranches:
+    """Exercise the Windows-conditional paths on any host.
+
+    These guards exist because NTFS permissions are ACL-based and
+    ``os.chmod``/``os.fchmod`` cannot express them. Simulating the flag proves
+    the Windows path is coherent rather than merely untested -- a real Windows
+    CI job still runs the rest of the suite, but it cannot reach the POSIX
+    side, and vice versa.
+    """
+
+    @pytest.fixture
+    def as_windows(self, monkeypatch):
+        import encryption_helper._io as io_module
+
+        monkeypatch.setattr(io_module, "_WINDOWS", True)
+        return io_module
+
+    def test_write_succeeds_without_mode_syscalls(self, tmp_path, as_windows):
+        outcome = as_windows.secure_write_bytes(tmp_path / "key.pem", b"secret")
+        assert outcome.path.read_bytes() == b"secret"
+        assert outcome.backup is None
+        assert outcome.replaced is False
+
+    def test_backup_succeeds_without_chmod(self, tmp_path, as_windows):
+        target = tmp_path / "key.pem"
+        as_windows.secure_write_bytes(target, b"v1")
+        outcome = as_windows.secure_write_bytes(target, b"v2", overwrite=True)
+
+        assert outcome.replaced is True
+        assert outcome.backup is not None
+        assert outcome.backup.read_bytes() == b"v1"
+        assert target.read_bytes() == b"v2"
+
+    def test_restore_succeeds_without_chmod(self, tmp_path, as_windows, monkeypatch):
+        target = tmp_path / "key.pem"
+        as_windows.secure_write_bytes(target, b"original")
+
+        def boom(*_args, **_kwargs):
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr("tempfile.mkstemp", boom)
+        with pytest.raises(KeyWriteError):
+            as_windows.secure_write_bytes(target, b"replacement", overwrite=True)
+        assert target.read_bytes() == b"original"
+
+
+class TestRestoreOnEveryFailurePath:
+    """Every path that can fail after displacement must restore it."""
+
+    def test_restore_when_directory_creation_fails(self, tmp_path, monkeypatch):
+        target = tmp_path / "key.pem"
+        secure_write_bytes(target, b"original")
+
+        def boom(*_args, **_kwargs):
+            raise OSError(13, "Permission denied")
+
+        monkeypatch.setattr("pathlib.Path.mkdir", boom)
+        with pytest.raises(KeyWriteError, match="Could not create directory"):
+            secure_write_bytes(target, b"replacement", overwrite=True)
+
+        assert target.read_bytes() == b"original"
+        assert not list(tmp_path.glob("*.bak-*"))
+
+    def test_restore_when_the_atomic_rename_fails(self, tmp_path, monkeypatch):
+        """The last possible failure point: the commit itself."""
+        target = tmp_path / "key.pem"
+        secure_write_bytes(target, b"original")
+
+        real_replace = Path.replace
+
+        def selective(self, other):
+            # Fail only the final commit -- the temporary file being renamed
+            # into place. The backup rename and the restore rename must still
+            # work, or the test would prove nothing about restoration.
+            if self.name.endswith(".tmp"):
+                raise OSError(5, "Input/output error")
+            return real_replace(self, other)
+
+        monkeypatch.setattr(Path, "replace", selective)
+        with pytest.raises(KeyWriteError, match="Could not write"):
+            secure_write_bytes(target, b"replacement", overwrite=True)
+
+        monkeypatch.undo()
+        assert target.read_bytes() == b"original"
+        assert not list(tmp_path.glob("*.tmp")), "a temporary file was orphaned"

@@ -78,6 +78,46 @@ jobs:
       - name: Test
         run: pytest --cov --cov-report=term-missing --cov-report=xml
 
+  fuzz:
+    name: Fuzz
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip -e .
+      # The standalone runner needs no fuzzing engine and no compiler, so it
+      # can be a required check. Every target must fail closed on arbitrary
+      # input: a typed error, never a struct.error, IndexError or plaintext.
+      - name: Fuzz the parsers
+        working-directory: fuzz
+        run: python run_fuzz.py --iterations 50000
+
+  examples:
+    name: Examples and benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip -e .
+      # Documentation that is never executed drifts. Every example runs, and
+      # the docs-accuracy suite checks the README against the code.
+      - name: Run every example
+        run: |
+          for example in examples/*.py; do
+            echo "--- $example"
+            python "$example"
+          done
+      - name: Benchmarks (smoke, not a regression gate)
+        run: python benches/bench_crypto.py --quick
+
   security:
     name: Security scan
     runs-on: ubuntu-latest
@@ -188,7 +228,7 @@ jobs:
   ci-ok:
     name: CI passed
     if: always()
-    needs: [lint, types, test, security, build]
+    needs: [lint, types, test, fuzz, examples, security, build]
     runs-on: ubuntu-latest
     steps:
       - name: Fail if any dependency failed
