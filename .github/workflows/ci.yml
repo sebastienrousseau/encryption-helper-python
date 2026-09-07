@@ -156,6 +156,21 @@ jobs:
           test "$(stat -c '%a' /tmp/smoke-keys/key.pem)" = "600" \
             || { echo "::error::private key is not mode 0600"; exit 1; }
           /tmp/smoke/bin/encryption-helper fingerprint /tmp/smoke-keys/key.pub.pem
+          # An encrypted PEM must be generatable AND loadable from the
+          # installed wheel, not only from the source tree.
+          export SMOKE_PASS='smoke test passphrase'
+          /tmp/smoke/bin/encryption-helper --quiet keygen \
+            --out-dir /tmp/smoke-enc --key-size 2048 --passphrase-env SMOKE_PASS
+          head -1 /tmp/smoke-enc/key.pem | grep -q 'BEGIN ENCRYPTED PRIVATE KEY' \
+            || { echo "::error::key was not encrypted at rest"; exit 1; }
+          echo signed-content > /tmp/smoke-msg
+          /tmp/smoke/bin/encryption-helper --quiet sign \
+            --private-key /tmp/smoke-enc/key.pem --passphrase-env SMOKE_PASS \
+            --in /tmp/smoke-msg --out /tmp/smoke-msg.sig
+          /tmp/smoke/bin/encryption-helper verify \
+            --public-key /tmp/smoke-enc/key.pub.pem \
+            --signature /tmp/smoke-msg.sig --in /tmp/smoke-msg \
+            || { echo "::error::encrypted key round trip failed"; exit 1; }
           echo secret | /tmp/smoke/bin/encryption-helper --quiet encrypt \
             --public-key /tmp/smoke-keys/key.pub.pem --in - --out - \
             | /tmp/smoke/bin/encryption-helper --quiet decrypt \
