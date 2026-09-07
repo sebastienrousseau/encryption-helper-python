@@ -14,6 +14,8 @@ import encryption_helper
 import pytest
 from encryption_helper.errors import EncryptionHelperError
 
+from ._support import source_tree_only
+
 
 class TestVersion:
     def test_version_matches_installed_metadata(self):
@@ -24,6 +26,7 @@ class TestVersion:
         """
         assert encryption_helper.__version__ == metadata.version("encryption-helper")
 
+    @source_tree_only
     def test_release_version_is_declared_in_exactly_one_place(self):
         """Regression test for finding M1.
 
