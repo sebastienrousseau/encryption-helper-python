@@ -95,6 +95,29 @@ jobs:
         run: bandit -c pyproject.toml -r encryption_helper
       - name: pip-audit
         run: pip-audit --strict --desc
+      # This project's whole purpose is generating private keys, so a
+      # committed key is a first-class failure, not a lint nit. .gitignore is
+      # not a security boundary -- `git add -f` bypasses it.
+      - name: Check for committed private key material
+        run: |
+          # Anchored at the start of a line, which is how real PEM armour
+          # appears. An indented mention inside a docstring or a code fence is
+          # documentation, not a leaked key.
+          if git grep -lIE -- '^-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----'; then
+            echo "::error::A private key appears to be committed to this repository."
+            exit 1
+          fi
+          echo "No committed private key material found."
+      - name: Check SPDX headers are present
+        run: |
+          missing=0
+          for f in $(git ls-files '*.py'); do
+            if ! head -3 "$f" | grep -q 'SPDX-License-Identifier: Apache-2.0'; then
+              echo "::error file=$f::missing SPDX-License-Identifier header"
+              missing=1
+            fi
+          done
+          exit $missing
 
   build:
     name: Build distribution
@@ -119,6 +142,27 @@ jobs:
               sys.exit("py.typed is missing from the wheel")
           print("py.typed present")
           PY
+      # Install the built wheel into a clean environment and drive the real
+      # console script. Tests run from the source tree cannot catch a broken
+      # entry point or missing package data.
+      - name: Smoke test the installed wheel
+        run: |
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/pip install --quiet dist/*.whl
+          /tmp/smoke/bin/encryption-helper --version
+          /tmp/smoke/bin/encryption-helper --help
+          /tmp/smoke/bin/encryption-helper keygen \
+            --out-dir /tmp/smoke-keys --key-size 2048 --no-passphrase
+          test "$(stat -c '%a' /tmp/smoke-keys/key.pem)" = "600" \
+            || { echo "::error::private key is not mode 0600"; exit 1; }
+          /tmp/smoke/bin/encryption-helper fingerprint /tmp/smoke-keys/key.pub.pem
+          echo secret | /tmp/smoke/bin/encryption-helper --quiet encrypt \
+            --public-key /tmp/smoke-keys/key.pub.pem --in - --out - \
+            | /tmp/smoke/bin/encryption-helper --quiet decrypt \
+              --private-key /tmp/smoke-keys/key.pem --in - --out - \
+            | grep -qx secret \
+            || { echo "::error::encrypt/decrypt round trip failed"; exit 1; }
+          echo "Wheel smoke test passed."
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: distribution
