@@ -1,0 +1,10 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/hsbc/encryption-helper-python/security/advisories/new
+    about: >-
+      Please report vulnerabilities privately, never as a public issue.
+      This project handles private key material.
+  - name: Ask a question
+    url: https://github.com/hsbc/encryption-helper-python/discussions
+    about: For usage questions and general discussion.
