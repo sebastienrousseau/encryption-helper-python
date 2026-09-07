@@ -139,7 +139,22 @@ encryption-helper keygen --key-size 4096 --out-dir ./secrets
 | Source | Handling |
 | ------ | -------- |
 | `--passphrase-env VAR` | Taken verbatim. A whitespace-only value is rejected as an unset-variable accident; leading and trailing spaces are otherwise preserved. |
-| `--passphrase-file PATH` | Exactly one trailing newline (`LF` or `CRLF`) is removed, because editors append one. **Nothing else is stripped**, so a passphrase may begin or end with a space, contain internal newlines, or not be valid UTF-8. |
+| `--passphrase-file PATH` | Exactly one trailing newline (`LF` or `CRLF`) is removed, because editors append one. **Nothing else is stripped**, so a passphrase may begin or end with a space, contain internal newlines, or not be valid UTF-8. Capped at 64 KiB. |
+| `--no-passphrase` | Stores the key unencrypted. |
+
+`--passphrase-env`, `--passphrase-file` and `--no-passphrase` are **mutually
+exclusive at the parser level**: `--no-passphrase --passphrase-file secret.txt`
+is a usage error, not a precedence puzzle. Prompting happens only when none of
+the three is given and a terminal is attached.
+
+Order of operations for a file: read → remove one trailing newline → reject
+empty or whitespace-only → convert to bytes. Text sources (prompt, environment)
+are UTF-8 encoded at that same single conversion point; a file is byte-exact,
+so a random-bytes secret works unchanged.
+
+On POSIX you are warned — not blocked — if the passphrase file is group- or
+world-readable. CI secret mounts and enterprise filesystems have access models
+this check cannot reason about, so it does not pretend to be a guarantee.
 
 So a file containing `secret\n` yields the passphrase `secret`, and a file
 containing `secret\n\n` yields `secret\n`.

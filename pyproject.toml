@@ -70,11 +70,15 @@ pre-commit = ">=3.8.0"
 # ---------------------------------------------------------------------------
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "encryption_helper"]
 addopts = [
     "--strict-markers",
     "--strict-config",
     "-ra",
+    # Run the docstring examples. Documentation that is never executed drifts:
+    # a corrupted set of doctest examples shipped in this package precisely
+    # because nothing ran them.
+    "--doctest-modules",
 ]
 xfail_strict = true
 filterwarnings = ["error"]
