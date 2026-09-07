@@ -51,6 +51,20 @@ material in 0.0.1, and replaces the public API.
   paths or values into a terminal.
 - The user is warned when key material is about to be written inside a git
   working tree.
+- **A write that fails after backing up its target now restores the backup.**
+  Previously a failed replacement renamed the old file aside and left nothing
+  at the destination: the bytes survived, but the pair was incomplete. The
+  original permission bits are restored too, not just the contents.
+- Destination aliasing is rejected: a symlinked destination, a hard-linked
+  private/public pair, and a private key path with more than one hard link
+  (where the old key would stay readable under the other name).
+- `--passphrase-env` rejects a whitespace-only value, matching the interactive
+  prompt, and never echoes a rejected value.
+- `--passphrase-file` has pinned semantics: exactly one trailing newline is
+  removed and nothing else, so a passphrase may begin or end with a space or
+  contain internal newlines.
+- Custody warnings moved to stderr, so they survive stdout being redirected or
+  parsed as JSON, while `--quiet` still silences them for automation.
 
 ### Added
 
@@ -149,6 +163,12 @@ material in 0.0.1, and replaces the public API.
 - A dedicated `tests/test_security_regressions.py` asserts, across every log
   level, that neither private key material nor passphrases reach stdout,
   stderr, logs or exception messages.
+- `tests/test_release_candidate.py` injects failures at every write stage --
+  before private creation, after creation, after backup, during public
+  creation and replacement, and during rollback itself -- and asserts the
+  directory always holds a complete old pair, a complete new pair, or no pair.
+  Each safeguard was mutation-tested: reverting it makes the corresponding
+  test fail.
 
 ## [0.0.1] — 2024-07-27
 
