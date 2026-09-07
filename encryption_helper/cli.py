@@ -29,6 +29,7 @@ import getpass
 import json
 import logging
 import os
+import stat
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -76,6 +77,11 @@ EXIT_CRYPTO_FAILURE: Final = 4
 
 _STDIO = "-"
 _LOG_LEVELS: Final = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+
+#: Upper bound on a passphrase file. Vastly larger than any real passphrase,
+#: small enough that pointing --passphrase-file at a disk image is an error
+#: rather than an out-of-memory event.
+MAX_PASSPHRASE_FILE_BYTES: Final = 64 * 1024
 
 logger = logging.getLogger(__name__)
 
@@ -149,18 +155,99 @@ def _passphrase_from_source(args: argparse.Namespace) -> bytes | None:
                 f"Environment variable {args.passphrase_env} is empty or "
                 "contains only whitespace, which would not protect the key."
             )
-        return value.encode()
+        return _as_passphrase_bytes(value)
 
     if getattr(args, "passphrase_file", None):
-        data = _strip_one_trailing_newline(read_bytes(args.passphrase_file))
+        path = Path(args.passphrase_file).expanduser()
+        _reject_oversized_passphrase_file(path)
+        _warn_if_passphrase_file_is_readable(path)
+        data = _strip_one_trailing_newline(read_bytes(path))
         if not data.strip():
             _fail_usage(
                 f"Passphrase file {args.passphrase_file} is empty or contains "
                 "only whitespace, which would not protect the key."
             )
-        return data
+        return _as_passphrase_bytes(data)
 
     return None
+
+
+def _as_passphrase_bytes(value: str | bytes) -> bytes:
+    r"""Convert a passphrase to bytes. The one place this transition happens.
+
+    All three sources converge here so no source can acquire its own encoding
+    behaviour by accident:
+
+    * the interactive prompt and ``--passphrase-env`` yield :class:`str`, which
+      is UTF-8 encoded;
+    * ``--passphrase-file`` yields :class:`bytes`, which pass through
+      unchanged, so a file may hold a byte-exact secret that is not valid
+      UTF-8 -- a random-bytes secret from ``head -c 32 /dev/urandom``, say.
+
+    Args:
+        value: Passphrase text or raw bytes.
+
+    Returns:
+        The passphrase as bytes, ready for ``BestAvailableEncryption``.
+
+    Example:
+        >>> _as_passphrase_bytes("secret")
+        b'secret'
+        >>> _as_passphrase_bytes(b"\xff\xfe raw")
+        b'\xff\xfe raw'
+    """
+    return value if isinstance(value, bytes) else value.encode("utf-8")
+
+
+def _reject_oversized_passphrase_file(path: Path) -> None:
+    """Refuse a passphrase file larger than :data:`MAX_PASSPHRASE_FILE_BYTES`.
+
+    The size is checked before reading, so an enormous file is never loaded
+    into memory. This is robustness rather than a security control: pointing
+    ``--passphrase-file`` at a log or a disk image is a mistake, and it should
+    fail as one.
+
+    Raises:
+        SystemExit: If the file is too large.
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return  # read_bytes() will report the real problem in a moment.
+    if size > MAX_PASSPHRASE_FILE_BYTES:
+        _fail_usage(
+            f"Passphrase file {path} is {size} bytes, which exceeds the "
+            f"{MAX_PASSPHRASE_FILE_BYTES}-byte limit. A passphrase file is "
+            "expected to contain a passphrase."
+        )
+
+
+def _warn_if_passphrase_file_is_readable(path: Path) -> None:
+    """Warn if a passphrase file is group- or world-readable on POSIX.
+
+    Deliberately a warning, not a refusal. CI secret mounts, container
+    tmpfs and enterprise filesystems have permission models this check cannot
+    reason about, so rejecting would break legitimate setups while promising a
+    guarantee we cannot make.
+
+    On Windows this is skipped entirely rather than pretending Unix mode bits
+    describe an ACL.
+    """
+    if sys.platform == "win32":
+        return
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except OSError:  # pragma: no cover - reported by the subsequent read
+        return
+    if mode & 0o077:
+        print(
+            f"warning: passphrase file {path} is mode {mode:04o}, readable by "
+            "others.\n"
+            "         Consider `chmod 600` unless your platform's access "
+            "control makes that\n"
+            "         unnecessary.",
+            file=sys.stderr,
+        )
 
 
 def _strip_one_trailing_newline(data: bytes) -> bytes:
@@ -173,17 +260,12 @@ def _strip_one_trailing_newline(data: bytes) -> bytes:
         The contents without one trailing line ending.
 
     Example:
-        >>> _strip_one_trailing_newline(b"secret
-    ")
+        >>> _strip_one_trailing_newline(b"secret\n")
         b'secret'
-        >>> _strip_one_trailing_newline(b"secret
-    ")
+        >>> _strip_one_trailing_newline(b"secret\r\n")
         b'secret'
-        >>> _strip_one_trailing_newline(b"secret
-
-    ")
-        b'secret
-    '
+        >>> _strip_one_trailing_newline(b"secret\n\n")
+        b'secret\n'
         >>> _strip_one_trailing_newline(b" secret ")
         b' secret '
     """
@@ -216,7 +298,7 @@ def _prompt_new_passphrase() -> bytes:
         )
     if getpass.getpass("Confirm passphrase: ") != first:
         _fail_usage("The passphrases did not match.")
-    return first.encode()
+    return _as_passphrase_bytes(first)
 
 
 def _new_key_passphrase(args: argparse.Namespace) -> bytes | None:
@@ -277,7 +359,7 @@ def _load_private_key(args: argparse.Namespace, path: str) -> PrivateKeyTypes:
         if not _interactive():
             raise
     prompt = getpass.getpass(f"Passphrase for {path}: ")
-    return load_private_key_file(path, passphrase=prompt.encode())
+    return load_private_key_file(path, passphrase=_as_passphrase_bytes(prompt))
 
 
 def _warn_if_inside_git_worktree(directory: Path) -> None:
@@ -476,8 +558,22 @@ def _cmd_convert(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _add_passphrase_flags(parser: argparse.ArgumentParser) -> None:
-    """Add the mutually exclusive passphrase source flags."""
+def _add_passphrase_flags(
+    parser: argparse.ArgumentParser, *, allow_opt_out: bool = False
+) -> None:
+    """Add the passphrase source flags as one mutually exclusive group.
+
+    Exclusivity is enforced by the parser rather than by precedence rules
+    later on. ``--no-passphrase --passphrase-file secret.txt`` is a
+    contradiction, and argparse rejects it with a usage error instead of some
+    branch quietly picking a winner -- which previously discarded the supplied
+    passphrase and wrote an unencrypted key.
+
+    Args:
+        parser: Sub-parser to add the flags to.
+        allow_opt_out: Whether ``--no-passphrase`` applies. It only makes
+            sense when creating a key, not when reading an existing one.
+    """
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
         "--passphrase-env",
@@ -496,6 +592,17 @@ def _add_passphrase_flags(parser: argparse.ArgumentParser) -> None:
             "begin or end with a space. Keep the file mode 0600."
         ),
     )
+    if allow_opt_out:
+        group.add_argument(
+            "--no-passphrase",
+            action="store_true",
+            help=(
+                "Store the private key unencrypted. Required to skip "
+                "passphrase protection: without it, a passphrase is prompted "
+                "for, or must be supplied via --passphrase-env or "
+                "--passphrase-file."
+            ),
+        )
 
 
 def _add_io_flags(parser: argparse.ArgumentParser, *, output: bool = True) -> None:
@@ -626,20 +733,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     keygen.add_argument(
-        "--no-passphrase",
-        action="store_true",
-        help=(
-            "Store the private key unencrypted. Required to skip passphrase "
-            "protection: without it, a passphrase is prompted for, or must be "
-            "supplied via --passphrase-env or --passphrase-file."
-        ),
-    )
-    keygen.add_argument(
         "--show-public",
         action="store_true",
         help="Also write the public key to stdout. The private key is never printed.",
     )
-    _add_passphrase_flags(keygen)
+    _add_passphrase_flags(keygen, allow_opt_out=True)
     keygen.set_defaults(func=_cmd_keygen)
 
     enc = sub.add_parser(

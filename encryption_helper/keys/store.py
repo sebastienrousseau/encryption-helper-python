@@ -304,8 +304,11 @@ def write_key_pair(  # noqa: PLR0913 - all but two are keyword-only options
             public_path, public_bytes, mode=PUBLIC_FILE_MODE, overwrite=overwrite
         )
     except Exception:
-        # Never leave a private key whose public counterpart is missing or
-        # stale: undo the half-written pair before surfacing the failure.
+        # Rollback layer 2 of 2. secure_write_bytes() has already restored
+        # anything it displaced internally, so by the time we get here the
+        # public destination is in its original state. All that remains is to
+        # undo the private write that *succeeded*, so we never leave a private
+        # key whose public counterpart is missing or stale.
         _undo(private_outcome)
         raise
 

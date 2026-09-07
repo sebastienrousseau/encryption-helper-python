@@ -65,6 +65,21 @@ material in 0.0.1, and replaces the public API.
   contain internal newlines.
 - Custody warnings moved to stderr, so they survive stdout being redirected or
   parsed as JSON, while `--quiet` still silences them for automation.
+- **`--passphrase-env`, `--passphrase-file` and `--no-passphrase` are mutually
+  exclusive at the parser level.** Previously `--no-passphrase
+  --passphrase-file secret.txt` was accepted, silently discarded the supplied
+  passphrase, and wrote an **unencrypted** key.
+- `--passphrase-file` is capped at 64 KiB, checked before the file is read, so
+  pointing it at a log or a disk image fails as the mistake it is rather than
+  consuming memory.
+- All three passphrase sources converge on a single conversion point. Text
+  sources are UTF-8 encoded there; a file stays byte-exact, so a non-UTF-8
+  secret works and no decode step exists to raise `UnicodeDecodeError`.
+- A group- or world-readable passphrase file produces a warning on POSIX. It is
+  deliberately not a refusal, and is skipped on Windows rather than pretending
+  Unix mode bits describe an ACL.
+- The resolved passphrase is never written back to the argparse namespace, so
+  a future `logger.debug("args=%r", args)` cannot leak it. Pinned by test.
 
 ### Added
 
@@ -169,6 +184,9 @@ material in 0.0.1, and replaces the public API.
   directory always holds a complete old pair, a complete new pair, or no pair.
   Each safeguard was mutation-tested: reverting it makes the corresponding
   test fail.
+- Doctests now run as part of the suite (`--doctest-modules`). They were not
+  executed before, which is how a set of corrupted docstring examples --
+  containing literal newlines instead of escapes -- came to ship.
 
 ## [0.0.1] — 2024-07-27
 

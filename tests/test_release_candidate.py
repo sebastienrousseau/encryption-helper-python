@@ -524,3 +524,180 @@ def keygen_rc(out_dir, *extra: str) -> list[str]:
 def keygen_rc_plain(out_dir) -> list[str]:
     """Keygen argv that deliberately opts out of encryption."""
     return [*keygen_rc(out_dir), "--no-passphrase"]
+
+
+# ---------------------------------------------------------------------------
+# 6. Passphrase source exclusivity, bounds, and namespace hygiene
+# ---------------------------------------------------------------------------
+
+
+class TestPassphraseSourceExclusivity:
+    """Exclusivity belongs to the parser, not to precedence rules later on."""
+
+    @pytest.mark.parametrize(
+        "flags",
+        [
+            ["--no-passphrase", "--passphrase-file", "PASSFILE"],
+            ["--no-passphrase", "--passphrase-env", "EH_RC"],
+            ["--passphrase-env", "EH_RC", "--passphrase-file", "PASSFILE"],
+        ],
+    )
+    def test_contradictory_sources_are_a_usage_error(self, tmp_path, flags):
+        """Regression: `--no-passphrase --passphrase-file x` silently ignored
+        the file and wrote an UNENCRYPTED key -- the dangerous direction.
+        """
+        secret_file = tmp_path / "pass.txt"
+        secret_file.write_bytes(b"supplied")
+        resolved = [str(secret_file) if f == "PASSFILE" else f for f in flags]
+        keys = tmp_path / "keys"
+
+        with pytest.raises(SystemExit) as excinfo:
+            main(["keygen", "--out-dir", str(keys), "--key-size", "2048", *resolved])
+        assert excinfo.value.code == EXIT_USAGE
+        assert not (keys / PRIVATE).exists(), "a key was written despite the error"
+
+    def test_no_passphrase_is_not_offered_when_reading_a_key(self, tmp_path, capsys):
+        """It only makes sense when creating a key, never when loading one."""
+        with pytest.raises(SystemExit):
+            main(["decrypt", "--private-key", "k.pem", "--no-passphrase"])
+        assert "unrecognized arguments" in capsys.readouterr().err
+
+
+class TestPassphraseFileBounds:
+    def test_oversized_file_is_rejected_without_being_read(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """Robustness: a passphrase file is not an arbitrary blob channel."""
+        from encryption_helper.cli import MAX_PASSPHRASE_FILE_BYTES
+
+        secret_file = tmp_path / "huge.txt"
+        secret_file.write_bytes(b"a" * (MAX_PASSPHRASE_FILE_BYTES + 1))
+
+        def must_not_read(*_args, **_kwargs):
+            msg = "the oversized file must be rejected before it is read"
+            raise AssertionError(msg)
+
+        monkeypatch.setattr("encryption_helper.cli.read_bytes", must_not_read)
+        with pytest.raises(SystemExit) as excinfo:
+            main(
+                [
+                    "keygen",
+                    "--out-dir",
+                    str(tmp_path / "keys"),
+                    "--passphrase-file",
+                    str(secret_file),
+                ]
+            )
+        assert excinfo.value.code == EXIT_USAGE
+        assert "exceeds" in capsys.readouterr().err
+
+    def test_a_file_at_the_limit_is_accepted(self, tmp_path):
+        from encryption_helper.cli import MAX_PASSPHRASE_FILE_BYTES
+
+        secret_file = tmp_path / "big.txt"
+        secret_file.write_bytes(b"a" * min(MAX_PASSPHRASE_FILE_BYTES, 1000))
+        assert (
+            main(keygen_rc(tmp_path / "keys", "--passphrase-file", str(secret_file)))
+            == EXIT_OK
+        )
+
+    def test_non_utf8_file_does_not_crash(self, tmp_path):
+        """There is no decode step, so no UnicodeDecodeError path exists.
+
+        The file source is byte-exact by design; this pins that so a future
+        refactor adding a `.decode()` has to confront the decision.
+        """
+        secret_file = tmp_path / "binary.bin"
+        secret_file.write_bytes(b"\xff\xfe\x00 binary secret")
+        keys = tmp_path / "keys"
+
+        assert main(keygen_rc(keys, "--passphrase-file", str(secret_file))) == EXIT_OK
+        assert load_private_key_file(
+            keys / PRIVATE, passphrase=b"\xff\xfe\x00 binary secret"
+        )
+
+    @posix_only
+    def test_world_readable_passphrase_file_warns_but_proceeds(self, tmp_path, capsys):
+        """A warning, not a refusal: CI secret mounts have their own models."""
+        secret_file = tmp_path / "pass.txt"
+        secret_file.write_bytes(b"secret")
+        secret_file.chmod(0o644)
+
+        assert (
+            main(keygen_rc(tmp_path / "keys", "--passphrase-file", str(secret_file)))
+            == EXIT_OK
+        )
+        err = capsys.readouterr().err
+        assert "readable by others" in err
+        assert "0644" in err
+        assert "secret" not in err.replace("secrets", "")
+
+    @posix_only
+    def test_owner_only_passphrase_file_is_silent(self, tmp_path, capsys):
+        secret_file = tmp_path / "pass.txt"
+        secret_file.write_bytes(b"secret")
+        secret_file.chmod(0o600)
+        main(keygen_rc(tmp_path / "keys", "--passphrase-file", str(secret_file)))
+        assert "readable by others" not in capsys.readouterr().err
+
+
+class TestNamespaceHygiene:
+    """The resolved secret must never land on the argparse namespace.
+
+    Debug code such as ``logger.debug("args=%r", args)`` is easy to add later
+    and would leak the passphrase even though every obvious password log
+    statement has been removed. The namespace keeps only the *source
+    identifier* -- a variable name or a path -- and the secret lives in a
+    short-lived local.
+    """
+
+    SECRET = "NAMESPACE-LEAK-CANARY-7b21"
+
+    def test_namespace_never_holds_the_resolved_secret(self, tmp_path, monkeypatch):
+        from encryption_helper.cli import build_parser
+
+        monkeypatch.setenv("EH_RC", self.SECRET)
+        parser = build_parser()
+        args = parser.parse_args(keygen_rc(tmp_path, "--passphrase-env", "EH_RC"))
+
+        assert self.SECRET not in repr(args)
+        assert self.SECRET not in str(vars(args))
+        assert not any(self.SECRET in str(value) for value in vars(args).values())
+        # Only the source identifier is retained.
+        assert args.passphrase_env == "EH_RC"
+
+    def test_namespace_stays_clean_after_a_full_run(self, tmp_path, monkeypatch):
+        """Capture the namespace as the command actually saw it."""
+        import encryption_helper.cli as cli_module
+
+        monkeypatch.setenv("EH_RC", self.SECRET)
+        seen = {}
+        real = cli_module._cmd_keygen
+
+        def capture(args):
+            result = real(args)
+            seen["repr"] = repr(args)
+            seen["vars"] = str(vars(args))
+            return result
+
+        monkeypatch.setattr(cli_module, "_cmd_keygen", capture)
+        # set_defaults captured the original function, so re-parse via main().
+        parser = cli_module.build_parser()
+        parsed = parser.parse_args(keygen_rc(tmp_path, "--passphrase-env", "EH_RC"))
+        capture(parsed)
+
+        assert self.SECRET not in seen["repr"]
+        assert self.SECRET not in seen["vars"]
+
+    def test_prompted_secret_does_not_reach_the_namespace(self, tmp_path, monkeypatch):
+        import encryption_helper.cli as cli_module
+
+        monkeypatch.setattr(cli_module, "_interactive", lambda: True)
+        monkeypatch.setattr("getpass.getpass", lambda _prompt: self.SECRET)
+
+        parser = cli_module.build_parser()
+        args = parser.parse_args(["keygen", "--out-dir", str(tmp_path)])
+        cli_module._cmd_keygen(args)
+
+        assert self.SECRET not in repr(args)
+        assert self.SECRET not in str(vars(args))
