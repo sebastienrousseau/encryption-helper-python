@@ -1,0 +1,108 @@
+"""Tests for package-level metadata and the public API surface."""
+
+from __future__ import annotations
+
+import importlib
+import logging
+import subprocess
+import sys
+from importlib import metadata
+
+import encryption_helper
+import pytest
+from encryption_helper.errors import EncryptionHelperError
+
+
+class TestVersion:
+    def test_version_matches_installed_metadata(self):
+        """Regression test for finding M1.
+
+        The version used to be written out in three separate files plus a
+        test, so they could -- and did -- drift. There is now one source.
+        """
+        assert encryption_helper.__version__ == metadata.version("encryption-helper")
+
+    def test_release_version_is_declared_in_exactly_one_place(self):
+        """Regression test for finding M1.
+
+        ``0.0.1`` was declared in ``__init__.py``, ``pyproject.toml`` and
+        ``setup.py``, and asserted by a fourth file. Bumping it meant four
+        edits, so it drifted. Only ``pyproject.toml`` may name a version now.
+        """
+        version = metadata.version("encryption-helper")
+        found = subprocess.run(  # noqa: S603
+            ["git", "grep", "-lF", version, "--", "encryption_helper", "*.toml"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert found.stdout.split() == ["pyproject.toml"]
+
+    def test_version_is_importable(self):
+        assert isinstance(encryption_helper.__version__, str)
+
+
+class TestPublicAPI:
+    @pytest.mark.parametrize("name", encryption_helper.__all__)
+    def test_everything_exported_exists(self, name):
+        assert hasattr(encryption_helper, name)
+
+    def test_all_is_sorted(self):
+        assert list(encryption_helper.__all__) == sorted(encryption_helper.__all__)
+
+    def test_no_legacy_names_survive(self):
+        """The removed API must be gone, not quietly still importable."""
+        for removed in ("Context", "generate_rsa_key", "main"):
+            assert not hasattr(encryption_helper, removed)
+
+    @pytest.mark.parametrize(
+        "module",
+        [
+            "encryption_helper.context",
+            "encryption_helper.common.strings",
+            "encryption_helper.utils.io.write_file",
+            "encryption_helper.utils.checks.checks",
+        ],
+    )
+    def test_dead_modules_are_removed(self, module):
+        """Findings H2 and C5: the unused, broken IO layer is gone."""
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module(module)
+
+    def test_every_error_derives_from_the_base(self):
+        from encryption_helper import errors
+
+        for name in errors.__all__:
+            if name == "EncryptionHelperError":
+                continue
+            assert issubclass(getattr(errors, name), EncryptionHelperError)
+
+
+class TestLogging:
+    def test_library_installs_only_a_null_handler(self):
+        """A library must not configure logging on the host's behalf."""
+        handlers = logging.getLogger("encryption_helper").handlers
+        assert all(isinstance(h, logging.NullHandler) for h in handlers)
+
+    def test_package_import_does_not_call_basic_config(self):
+        """Importing must not attach a handler to the root logger."""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import logging, encryption_helper;"
+                "print(len(logging.getLogger().handlers))",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert result.stdout.strip() == "0"
+
+
+class TestTypeMarker:
+    def test_py_typed_is_present(self):
+        """Without this marker, downstream consumers get no type information."""
+        from pathlib import Path
+
+        assert (Path(encryption_helper.__file__).parent / "py.typed").is_file()
