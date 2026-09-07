@@ -85,12 +85,13 @@ class TestKeygen:
         assert "BEGIN RSA PRIVATE KEY" not in captured.out
 
     def test_warns_that_the_key_is_secret(self, tmp_path, capsys):
+        """The warning goes to stderr so it survives stdout redirection."""
         main(["keygen", "--out-dir", str(tmp_path), "--no-passphrase"])
-        assert "PRIVATE KEY" in capsys.readouterr().out
+        assert "PRIVATE KEY" in capsys.readouterr().err
 
     def test_warns_when_the_key_is_unencrypted(self, tmp_path, capsys):
         main(["keygen", "--out-dir", str(tmp_path), "--no-passphrase"])
-        assert "NOT encrypted" in capsys.readouterr().out
+        assert "UNENCRYPTED" in capsys.readouterr().err
 
     @posix_only
     def test_private_key_is_owner_only(self, tmp_path):
@@ -204,7 +205,7 @@ class TestKeygen:
                 ]
             )
         assert excinfo.value.code == EXIT_USAGE
-        assert "unset or empty" in capsys.readouterr().err
+        assert "is not set" in capsys.readouterr().err
 
     def test_passphrase_from_file(self, tmp_path):
         secret = tmp_path / "pass.txt"

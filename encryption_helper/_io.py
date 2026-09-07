@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import stat
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -55,11 +56,14 @@ class WriteOutcome(NamedTuple):
         backup: Where the previous contents were moved, or :data:`None` if
             nothing was displaced.
         replaced: Whether an existing file was replaced.
+        backup_mode: The displaced file's original permission bits, so a
+            rollback can restore them exactly.
     """
 
     path: Path
     backup: Path | None
     replaced: bool
+    backup_mode: int | None = None
 
 
 def resolve_destination(path: str | os.PathLike[str]) -> Path:
@@ -117,19 +121,27 @@ def _timestamp() -> str:
     return datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
-def _backup(path: Path, mode: int) -> Path:
-    """Move ``path`` aside to a timestamped sibling and return the new path.
+def _backup(path: Path) -> tuple[Path, int]:
+    """Move ``path`` aside to a timestamped sibling.
+
+    The backup keeps the *original* file's permission bits, not the bits of
+    whatever is about to replace it. A rollback must restore what was there,
+    mode included.
 
     Args:
         path: Existing file to preserve.
-        mode: Permission bits to apply to the backup.
 
     Returns:
-        The path the original file was moved to.
+        A ``(backup_path, original_mode)`` pair.
 
     Raises:
         KeyWriteError: If the backup could not be created.
     """
+    try:
+        original_mode = stat.S_IMODE(path.stat().st_mode)
+    except OSError:  # pragma: no cover - raced away between checks
+        original_mode = SECRET_FILE_MODE
+
     backup = path.with_name(f"{path.name}.bak-{_timestamp()}")
     suffix = 1
     while backup.exists():
@@ -138,11 +150,25 @@ def _backup(path: Path, mode: int) -> Path:
     try:
         path.replace(backup)
         if not _WINDOWS:
-            backup.chmod(mode)
+            backup.chmod(original_mode)
     except OSError as exc:
         msg = f"Could not back up the existing file at {path}: {exc.strerror}"
         raise KeyWriteError(msg) from exc
-    return backup
+    return backup, original_mode
+
+
+def _restore(backup: Path, target: Path, mode: int) -> None:
+    """Put a backup back where it came from, mode and all.
+
+    Used when a write fails after its backup was taken. Failure is swallowed:
+    it must not mask the error that triggered the restore.
+    """
+    try:
+        backup.replace(target)
+        if not _WINDOWS:
+            target.chmod(mode)
+    except OSError:  # pragma: no cover - best effort during failure handling
+        pass
 
 
 def _reject_symlink(path: Path) -> None:
@@ -215,6 +241,7 @@ def secure_write_bytes(
     _reject_symlink(target)
 
     backup: Path | None = None
+    backup_mode: int | None = None
     replaced = target.exists()
     if replaced:
         if not overwrite:
@@ -225,12 +252,14 @@ def secure_write_bytes(
                 "file will be backed up first."
             )
             raise KeyExistsError(msg)
-        backup = _backup(target, mode)
+        backup, backup_mode = _backup(target)
 
     parent = target.parent
     try:
         parent.mkdir(parents=True, exist_ok=True, mode=dir_mode)
     except OSError as exc:
+        if backup is not None and backup_mode is not None:
+            _restore(backup, target, backup_mode)
         msg = f"Could not create directory {parent}: {exc.strerror}"
         raise KeyWriteError(msg) from exc
 
@@ -239,6 +268,11 @@ def secure_write_bytes(
             prefix=f".{target.name}.", suffix=".tmp", dir=parent
         )
     except OSError as exc:
+        # The backup was already taken, so the destination is currently empty.
+        # Put it back before reporting, or a failed replacement would leave no
+        # file where one used to be.
+        if backup is not None and backup_mode is not None:
+            _restore(backup, target, backup_mode)
         msg = f"Could not write to {target}: {exc.strerror}"
         raise KeyWriteError(msg) from exc
 
@@ -255,10 +289,14 @@ def secure_write_bytes(
     except OSError as exc:
         with contextlib.suppress(OSError):
             tmp_path.unlink()
+        if backup is not None and backup_mode is not None:
+            _restore(backup, target, backup_mode)
         msg = f"Could not write to {target}: {exc.strerror}"
         raise KeyWriteError(msg) from exc
 
-    return WriteOutcome(path=target, backup=backup, replaced=replaced)
+    return WriteOutcome(
+        path=target, backup=backup, replaced=replaced, backup_mode=backup_mode
+    )
 
 
 def read_bytes(path: str | os.PathLike[str]) -> bytes:

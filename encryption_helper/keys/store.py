@@ -158,10 +158,14 @@ def _validate_pair(
 def _preflight(private_path: Path, public_path: Path, *, overwrite: bool) -> None:
     """Reject an impossible or destructive write before touching the disk.
 
+    Checks aliasing rather than just path equality: two different names can
+    refer to the same file through a hard link, in which case writing the pair
+    would leave only whichever half was written last.
+
     Raises:
         KeyExistsError: If a destination exists and ``overwrite`` is false.
-        KeyWriteError: If the two paths collide or a destination is a
-            directory.
+        KeyWriteError: If the two paths alias each other, a destination is a
+            directory, or a destination is a hard link to something else.
     """
     if private_path == public_path:
         msg = (
@@ -174,6 +178,24 @@ def _preflight(private_path: Path, public_path: Path, *, overwrite: bool) -> Non
         if path.is_dir():
             msg = f"{path} is a directory, not a file."
             raise KeyWriteError(msg)
+
+    if private_path.exists() and public_path.exists():
+        try:
+            aliased = private_path.samefile(public_path)
+        except OSError:  # pragma: no cover - raced away between checks
+            aliased = False
+        if aliased:
+            msg = (
+                f"{private_path} and {public_path} are the same file (a hard "
+                "or symbolic link). Writing the pair would leave only one "
+                "half. Remove the link or choose a different destination."
+            )
+            raise KeyWriteError(msg)
+
+    # A private key destination with more than one link means the bytes are
+    # reachable under another name we know nothing about. Replacing it here
+    # would leave the old key live at that other path.
+    _reject_aliased_private_key(private_path)
 
     if overwrite:
         return
@@ -189,6 +211,28 @@ def _preflight(private_path: Path, public_path: Path, *, overwrite: bool) -> Non
         raise KeyExistsError(msg)
 
 
+def _reject_aliased_private_key(private_path: Path) -> None:
+    """Refuse a private key destination that has more than one hard link.
+
+    Raises:
+        KeyWriteError: If the destination is a multiply-linked file.
+    """
+    if not private_path.exists() or private_path.is_symlink():
+        return
+    try:
+        links = private_path.stat().st_nlink
+    except OSError:  # pragma: no cover - raced away between checks
+        return
+    if links > 1:
+        msg = (
+            f"{private_path} has {links} hard links, so the same file is "
+            "reachable under another name. Replacing it here would leave the "
+            "old key readable at that other path. Remove the extra link, or "
+            "choose a different destination."
+        )
+        raise KeyWriteError(msg)
+
+
 def _undo(outcome: WriteOutcome) -> None:
     """Reverse a completed write during rollback.
 
@@ -198,6 +242,8 @@ def _undo(outcome: WriteOutcome) -> None:
     try:
         if outcome.backup is not None:
             outcome.backup.replace(outcome.path)
+            if outcome.backup_mode is not None and os.name != "nt":
+                outcome.path.chmod(outcome.backup_mode)
         elif not outcome.replaced:
             outcome.path.unlink(missing_ok=True)
     except OSError:  # pragma: no cover - best effort during failure handling
