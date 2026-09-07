@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.0] — Unreleased
+## [0.0.2] — Unreleased
 
 This release is a rewrite. It fixes vulnerabilities that exposed private key
 material in 0.0.1, and replaces the public API.
@@ -34,6 +34,23 @@ material in 0.0.1, and replaces the public API.
 - **Writing through a symbolic link is refused.**
 - Error messages never contain key material, passphrases, or plaintext, and do
   not distinguish a wrong passphrase from a corrupt file.
+- **An unencrypted private key is no longer the default.** A passphrase is
+  prompted for without echo when a terminal is present; otherwise the run fails
+  unless `--passphrase-env`, `--passphrase-file` or an explicit
+  `--no-passphrase` is given.
+- **Key pairs are validated before they are written.** The serialised halves are
+  parsed back and compared, so a mismatched pair cannot reach the disk.
+- **A partial write is rolled back.** If the public key cannot be written, the
+  private key just written is removed, or restored from its backup. A private
+  key whose public counterpart is missing or stale never survives.
+- Both destinations are checked before anything is written, so the common
+  "file already exists" conflict is caught before any file is touched.
+- `~` in `--out-dir` is expanded and relative paths are resolved. Previously
+  `--out-dir ~/keys` created a directory literally named `~`.
+- Unexpected exception text is logged rather than printed, so it cannot spill
+  paths or values into a terminal.
+- The user is warned when key material is about to be written inside a git
+  working tree.
 
 ### Added
 
@@ -52,6 +69,8 @@ material in 0.0.1, and replaces the public API.
   flags and documented exit codes. 0.0.1 accepted no arguments at all.
 - A typed exception hierarchy rooted at `EncryptionHelperError`.
 - `py.typed`, so downstream consumers receive type information.
+- `KeyPairValidationError` for a pair that fails its pre-write self-check.
+- `NOTICE`, and an SPDX `Apache-2.0` header on every source file.
 - `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `CODEOWNERS`, `SUPPORT.md`, issue
   and pull request templates.
 
@@ -66,8 +85,12 @@ material in 0.0.1, and replaces the public API.
   application owns logging configuration.
 - **Breaking:** keys are no longer written to a hardcoded `keys/pem/` directory
   relative to the process working directory. Use `--out-dir`.
-- Default RSA key size raised from 2048 to 3072 bits. Sizes below 2048 are
-  rejected.
+- Default RSA key size raised from 2048 to 3072 bits. `--key-size` is now an
+  allowlist of 2048, 3072 and 4096 rather than a lower bound: the underlying
+  library accepts many sizes that clear the minimum but interoperate poorly.
+- `write_key_pair()` returns a frozen `KeyGenerationResult` carrying paths,
+  algorithm, key size, fingerprint and encryption status — and no secret, so a
+  caller cannot log one by accident.
 - Minimum Python raised to 3.10; 3.8 and 3.9 are end-of-life. Tested on 3.10
   through 3.14, across Linux, macOS and Windows.
 - Packaging migrated to PEP 621. The version is declared in exactly one place
@@ -75,6 +98,9 @@ material in 0.0.1, and replaces the public API.
   `__init__.py`, `pyproject.toml` and `setup.py`.
 - `SECURITY.md` replaced — it was the unedited GitHub template, claiming
   supported versions `5.1.x` and `4.0.x` for a `0.0.1` project.
+- Licence metadata corrected to **Apache-2.0**, matching the `LICENSE` file.
+  `pyproject.toml`, `setup.py` and the README previously all declared MIT while
+  the repository shipped Apache-2.0.
 - README corrected: it documented the private key format as PKCS#1, but the
   code emits, and always emitted, PKCS#8.
 
@@ -118,6 +144,11 @@ material in 0.0.1, and replaces the public API.
   review, `pip-audit` and OpenSSF Scorecard added.
 - Release workflow publishes to PyPI via Trusted Publishing with build
   provenance attestation.
+- CI fails on committed private key material, on a missing SPDX header, and if
+  the built wheel does not install and round-trip in a clean environment.
+- A dedicated `tests/test_security_regressions.py` asserts, across every log
+  level, that neither private key material nor passphrases reach stdout,
+  stderr, logs or exception messages.
 
 ## [0.0.1] — 2024-07-27
 
@@ -129,6 +160,6 @@ material in 0.0.1, and replaces the public API.
 > This version is withdrawn. It exposed private key material. See
 > [SECURITY-ADVISORY-0001](./docs/SECURITY-ADVISORY-0001.md).
 
-[Unreleased]: https://github.com/hsbc/encryption-helper-python/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/hsbc/encryption-helper-python/compare/v0.0.1...v0.1.0
+[Unreleased]: https://github.com/hsbc/encryption-helper-python/compare/v0.0.2...HEAD
+[0.0.2]: https://github.com/hsbc/encryption-helper-python/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/hsbc/encryption-helper-python/releases/tag/v0.0.1
