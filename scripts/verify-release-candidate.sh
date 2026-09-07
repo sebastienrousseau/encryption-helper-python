@@ -39,13 +39,47 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
+# --- 0. Repository identity --------------------------------------------------
+#
+# Derive the repository from *this script's own location*, never from the
+# current directory. `git rev-parse` run against the CWD answers "which repo am
+# I standing in", which is the wrong question and silently the wrong answer if
+# the shell has drifted. Everything below uses `git -C "$REPO_ROOT"` and
+# absolute paths so no later `cd` can change the target.
+
+SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
+
+REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+if [[ -z "$REPO_ROOT" ]]; then
+  echo "ERROR: $SCRIPT_PATH is not inside a git repository." >&2
+  exit 1
+fi
+
+# The script must belong to the checkout it is about to certify.
+case "$SCRIPT_PATH" in
+  "$REPO_ROOT"/*) ;;
+  *)
+    echo "ERROR: script at $SCRIPT_PATH is outside the repository" >&2
+    echo "       it resolved ($REPO_ROOT). Refusing to run." >&2
+    exit 1
+    ;;
+esac
+
+# And that checkout must be this project, not some other repository that
+# happens to contain a script by this name.
+if ! grep -q '^name = "encryption-helper"' "$REPO_ROOT/pyproject.toml" 2>/dev/null; then
+  echo "ERROR: $REPO_ROOT is not the encryption-helper repository." >&2
+  exit 1
+fi
+
 cd "$REPO_ROOT"
+echo "repository: $REPO_ROOT"
 
 # --- 1. Provenance -----------------------------------------------------------
 
 echo "=== Provenance ==="
-DIRT="$(git status --porcelain)"
+DIRT="$(git -C "$REPO_ROOT" status --porcelain)"
 if [[ -n "$DIRT" ]]; then
   echo "$DIRT"
   if [[ "$ALLOW_DIRTY" -eq 0 ]]; then
@@ -56,11 +90,11 @@ if [[ -n "$DIRT" ]]; then
   echo "WARNING: proceeding with a dirty tree (--allow-dirty)."
 fi
 
-HEAD_SHA="$(git rev-parse HEAD)"
-HEAD_SHORT="$(git rev-parse --short HEAD)"
-BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+HEAD_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+HEAD_SHORT="$(git -C "$REPO_ROOT" rev-parse --short HEAD)"
+BRANCH="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)"
 if [[ -n "$EXPECT_SHA" ]]; then
-  EXPECT_FULL="$(git rev-parse "$EXPECT_SHA" 2>/dev/null || true)"
+  EXPECT_FULL="$(git -C "$REPO_ROOT" rev-parse "$EXPECT_SHA" 2>/dev/null || true)"
   if [[ "$EXPECT_FULL" != "$HEAD_SHA" ]]; then
     echo "ERROR: HEAD is $HEAD_SHA but --expect named $EXPECT_SHA" >&2
     echo "       ($EXPECT_FULL). Refusing to produce a provenance record" >&2
@@ -74,7 +108,7 @@ echo "commit : $HEAD_SHA"
 echo "branch : $BRANCH"
 echo "clean  : $([[ -z "$DIRT" ]] && echo yes || echo NO)"
 
-mkdir -p build
+mkdir -p "$REPO_ROOT/build"
 WORKDIR="$(mktemp -d "${RC_WORKDIR:-$REPO_ROOT/build}/eh-rc-XXXXXX")"
 trap 'rm -rf "$WORKDIR"' EXIT
 echo "workdir: $WORKDIR"
@@ -89,7 +123,7 @@ fi
 
 echo
 echo "=== Build (from a pristine export of $HEAD_SHORT) ==="
-git archive --format=tar "$HEAD_SHA" | (mkdir -p "$WORKDIR/src" && tar -x -C "$WORKDIR/src")
+git -C "$REPO_ROOT" archive --format=tar "$HEAD_SHA" | (mkdir -p "$WORKDIR/src" && tar -x -C "$WORKDIR/src")
 python3 -m venv "$WORKDIR/buildenv"
 "$WORKDIR/buildenv/bin/pip" install --quiet --upgrade pip build twine
 (cd "$WORKDIR/src" && "$WORKDIR/buildenv/bin/python" -m build --outdir "$WORKDIR/dist" >/dev/null)
@@ -139,7 +173,7 @@ echo
 echo "=== Test suite (against the installed wheel) ==="
 # Tests run from outside the repository so the working tree cannot shadow the
 # installed package on sys.path.
-cp -r tests "$WORKDIR/tests"
+cp -r "$REPO_ROOT/tests" "$WORKDIR/tests"
 cat > "$WORKDIR/pytest.ini" <<'INI'
 [pytest]
 addopts = --strict-markers --strict-config -ra
@@ -222,7 +256,7 @@ echo "no key material or passphrase in DEBUG-level output"
 
 # --- 8. Record ---------------------------------------------------------------
 
-RECORD="build/release-candidate-$HEAD_SHORT.txt"
+RECORD="$REPO_ROOT/build/release-candidate-$HEAD_SHORT.txt"
 {
   echo "Release candidate verification"
   echo "generated : $(date -u +%Y-%m-%dT%H:%M:%SZ)"
