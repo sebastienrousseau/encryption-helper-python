@@ -82,45 +82,84 @@ pip install .
 encryption-helper keygen --out-dir ./secrets --name service
 ```
 
-```text
-Private key: secrets/service.pem
-Public key:  secrets/service.pub.pem
-Fingerprint: SHA256:U6sJe5e6rlxZi2ZFoPUW+XEW7pUS+42DwehICgx6G7g
+You will be prompted for a passphrase, twice, without echo:
 
-secrets/service.pem is a PRIVATE KEY. Anyone who reads it can impersonate you
-and decrypt data sent to you...
+```text
+Passphrase for the new private key:
+Confirm passphrase:
+
+RSA key pair generated successfully.
+Algorithm:   rsa
+Key size:    3072 bits
+Private key: /home/you/secrets/service.pem
+Public key:  /home/you/secrets/service.pub.pem
+Fingerprint: SHA256:U6sJe5e6rlxZi2ZFoPUW+XEW7pUS+42DwehICgx6G7g
+Encrypted:   yes
+
+/home/you/secrets/service.pem is a PRIVATE KEY. Anyone who reads it can
+impersonate you and decrypt data sent to you...
 ```
 
-The private key is **never printed**. The fingerprint is shown instead, so you
-can identify the key without handling it.
+The private key is **never printed**. The fingerprint identifies the key
+without exposing it.
 
-Protect it with a passphrase:
+**An unencrypted private key is never the default.** In a non-interactive
+context — CI, a script, a container — you must say which you want:
 
 ```bash
+# Supply a passphrase without putting it in argv:
 export KEY_PASSPHRASE='correct horse battery staple'
 encryption-helper keygen --out-dir ./secrets --passphrase-env KEY_PASSPHRASE
+
+# Or store it unencrypted, deliberately:
+encryption-helper keygen --out-dir ./secrets --no-passphrase
 ```
 
-Other algorithms:
+Otherwise the command refuses:
+
+```console
+$ encryption-helper keygen --out-dir ./secrets < /dev/null
+error: refusing to write an unencrypted private key by default.
+  Supply a passphrase with --passphrase-env VAR or --passphrase-file PATH,
+  or pass --no-passphrase to store the key unencrypted on purpose.
+$ echo $?
+2
+```
+
+Other algorithms and sizes:
 
 ```bash
 encryption-helper keygen --algorithm ed25519 --out-dir ./secrets
 encryption-helper keygen --algorithm ecdsa --curve p384 --out-dir ./secrets
-encryption-helper keygen --algorithm rsa --key-size 4096 --out-dir ./secrets
+encryption-helper keygen --key-size 4096 --out-dir ./secrets
 ```
+
+`--key-size` accepts `2048`, `3072` or `4096`. Other values are refused rather
+than silently accepted: the underlying library allows many sizes that clear the
+minimum but interoperate poorly.
 
 An existing key is never replaced by accident:
 
 ```console
-$ encryption-helper keygen --out-dir ./secrets
-error: secrets/key.pem already exists. Refusing to overwrite it, because
-replacing key material cannot be undone. ...
+$ encryption-helper keygen --out-dir ./secrets --name service --no-passphrase
+error: Key files already exist: /home/you/secrets/service.pem, ...
+Refusing to overwrite key material, because replacing it cannot be undone.
 $ echo $?
 3
 ```
 
-Pass `--force` to replace it; the old key is backed up to a timestamped
-sibling first.
+Both destinations are checked *before* anything is written, so a conflict never
+leaves a half-written pair. Pass `--force` to replace; the previous files are
+backed up to timestamped siblings first.
+
+You are also warned before writing keys into a git checkout:
+
+```console
+$ encryption-helper keygen --out-dir ./secrets
+warning: /repo/secrets is inside the git repository at /repo.
+         Private keys should not live in a working tree. Use --out-dir to
+         write them somewhere outside it.
+```
 
 ### Encrypt and decrypt
 
@@ -231,6 +270,7 @@ except DecryptionError:
 | `UnsupportedAlgorithmError` | The algorithm, curve, or format is not supported. |
 | `KeyGenerationError` | The backend failed to generate a key. |
 | `KeyExistsError` | A destination exists and overwriting was not requested. |
+| `KeyPairValidationError` | A generated pair failed its self-check; nothing was written. |
 | `KeyWriteError` / `KeyReadError` | Key material could not be written / read. |
 | `DecryptionError` | A ciphertext failed to decrypt or failed its integrity check. |
 | `SignatureVerificationError` | A signature did not verify. |
@@ -247,7 +287,11 @@ except DecryptionError:
 | Overwrites | Refused by default; `--force` backs up the previous key first. |
 | Atomicity | Written via a temporary file and `rename`, so an interrupted run cannot truncate a key. |
 | Symlinks | Writing through a symbolic link is refused. |
-| Passphrase input | Read from an environment variable or a file — never from `argv`, which is world-readable via `/proc`. |
+| Passphrase input | Prompted without echo, or read from an environment variable or a file — never from `argv`, which is world-readable via `/proc`. |
+| Plaintext keys | Never a default. Storing one unencrypted requires an explicit `--no-passphrase`. |
+| Pair integrity | Serialised keys are parsed back and matched before either file is written; a partial write is rolled back. |
+| Path handling | `~` is expanded and relative paths resolved, so `--out-dir ~/keys` writes to your home directory rather than creating a directory named `~`. |
+| Error text | Unexpected exception detail is logged, not printed, so it cannot spill paths or values into a terminal. |
 
 ### Cryptographic choices
 
@@ -258,7 +302,7 @@ except DecryptionError:
 | Public key container | SubjectPublicKeyInfo, or the OpenSSH single-line form. |
 | RSA signatures | PSS with SHA-256 and a salt the length of the digest. PKCS#1 v1.5 is not offered. |
 | EdDSA / ECDSA signatures | Ed25519 (PureEdDSA); ECDSA with SHA-256. |
-| Default RSA size | 3072 bits. Below 2048 is rejected outright. |
+| Default RSA size | 3072 bits. Only 2048, 3072 and 4096 are accepted. |
 | Fingerprints | SHA-256 over the OpenSSH wire encoding, matching `ssh-keygen -lf`. |
 
 Data of any size can be encrypted: the RSA key wraps only the 32-byte content
@@ -315,14 +359,17 @@ Full contributor guide: [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ## License
 
-> [!NOTE]
-> **The licence of this project is currently being confirmed.** The `LICENSE`
-> file is Apache-2.0 while the previous package metadata declared MIT. Until
-> HSBC Open Source resolves the discrepancy, the machine-readable `license`
-> field is intentionally omitted rather than asserting a term that contradicts
-> the file. Tracked as finding C1 in
-> [docs/IMPLEMENTATION_PLAN.md](./docs/IMPLEMENTATION_PLAN.md).
+Licensed under the **Apache License, Version 2.0**. See [LICENSE](./LICENSE) and
+[NOTICE](./NOTICE).
 
-See the [LICENSE](LICENSE) file.
+```text
+Copyright 2024-2026 HSBC Group Management Services Limited
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+```
 
 [0]: https://github.com/pyca/cryptography
