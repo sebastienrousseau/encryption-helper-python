@@ -13,7 +13,12 @@
 # never the working tree.
 #
 # Usage:
-#   scripts/verify-release-candidate.sh [--allow-dirty]
+#   scripts/verify-release-candidate.sh [--allow-dirty] [--expect <sha>]
+#
+# --expect asserts that HEAD is exactly the commit you meant to test. Use it
+# whenever the provenance record must name a specific commit -- in particular
+# after a merge, where the resulting commit is NOT the candidate SHA even if
+# the source is semantically identical.
 #
 # Scratch space defaults to build/ inside the repository rather than $TMPDIR,
 # because building and installing into two virtualenvs needs a few hundred MB
@@ -25,7 +30,14 @@
 set -euo pipefail
 
 ALLOW_DIRTY=0
-[[ "${1:-}" == "--allow-dirty" ]] && ALLOW_DIRTY=1
+EXPECT_SHA=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --allow-dirty) ALLOW_DIRTY=1; shift ;;
+    --expect) EXPECT_SHA="${2:-}"; shift 2 ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
@@ -47,6 +59,17 @@ fi
 HEAD_SHA="$(git rev-parse HEAD)"
 HEAD_SHORT="$(git rev-parse --short HEAD)"
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+if [[ -n "$EXPECT_SHA" ]]; then
+  EXPECT_FULL="$(git rev-parse "$EXPECT_SHA" 2>/dev/null || true)"
+  if [[ "$EXPECT_FULL" != "$HEAD_SHA" ]]; then
+    echo "ERROR: HEAD is $HEAD_SHA but --expect named $EXPECT_SHA" >&2
+    echo "       ($EXPECT_FULL). Refusing to produce a provenance record" >&2
+    echo "       for a commit you did not ask to test." >&2
+    exit 1
+  fi
+  echo "expected: $EXPECT_SHA -- matches HEAD"
+fi
+
 echo "commit : $HEAD_SHA"
 echo "branch : $BRANCH"
 echo "clean  : $([[ -z "$DIRT" ]] && echo yes || echo NO)"

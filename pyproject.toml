@@ -187,6 +187,8 @@ convention = "google"
 # their entire output mechanism, and they are executed rather than imported.
 "examples/**" = ["T201", "INP001", "S101", "PLR2004"]
 "benches/**" = ["T201", "INP001"]
+# Release-audit tooling: standalone scripts whose output is their purpose.
+"scripts/**" = ["T201", "INP001", "TRY300"]
 # `atheris` is imported lazily and inside a function: it is an optional
 # fuzzing engine, and the module must remain importable without it.
 "fuzz/**" = ["T201", "INP001", "S101", "PLC0415"]
