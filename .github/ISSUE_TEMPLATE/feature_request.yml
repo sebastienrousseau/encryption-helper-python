@@ -1,0 +1,35 @@
+name: Feature request
+description: Suggest a capability or improvement.
+labels: [enhancement, triage]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the situation, not the solution you have in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like the package to do?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What have you considered instead?
+      description: >-
+        Including whether the underlying `cryptography` library already covers
+        it.
+
+  - type: checkboxes
+    id: crypto
+    attributes:
+      label: Does this involve cryptographic behaviour?
+      options:
+        - label: >-
+            Yes — this changes or adds a cryptographic construction, key
+            format, or parameter choice. (These need extra review.)
