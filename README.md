@@ -134,6 +134,16 @@ encryption-helper keygen --algorithm ecdsa --curve p384 --out-dir ./secrets
 encryption-helper keygen --key-size 4096 --out-dir ./secrets
 ```
 
+#### Passphrase source semantics
+
+| Source | Handling |
+| ------ | -------- |
+| `--passphrase-env VAR` | Taken verbatim. A whitespace-only value is rejected as an unset-variable accident; leading and trailing spaces are otherwise preserved. |
+| `--passphrase-file PATH` | Exactly one trailing newline (`LF` or `CRLF`) is removed, because editors append one. **Nothing else is stripped**, so a passphrase may begin or end with a space, contain internal newlines, or not be valid UTF-8. |
+
+So a file containing `secret\n` yields the passphrase `secret`, and a file
+containing `secret\n\n` yields `secret\n`.
+
 `--key-size` accepts `2048`, `3072` or `4096`. Other values are refused rather
 than silently accepted: the underlying library allows many sizes that clear the
 minimum but interoperate poorly.
@@ -288,6 +298,7 @@ except DecryptionError:
 | Atomicity | Written via a temporary file and `rename`, so an interrupted run cannot truncate a key. |
 | Symlinks | Writing through a symbolic link is refused. |
 | Passphrase input | Prompted without echo, or read from an environment variable or a file — never from `argv`, which is world-readable via `/proc`. |
+| Destination aliasing | Symlinked destinations are refused; so are hard-linked pairs and a private key path with more than one link. |
 | Plaintext keys | Never a default. Storing one unencrypted requires an explicit `--no-passphrase`. |
 | Pair integrity | Serialised keys are parsed back and matched before either file is written; a partial write is rolled back. |
 | Path handling | `~` is expanded and relative paths resolved, so `--out-dir ~/keys` writes to your home directory rather than creating a directory named `~`. |
