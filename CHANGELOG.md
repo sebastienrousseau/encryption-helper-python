@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   standalone runner needing no fuzzing engine plus optional Atheris entry
   points. Both harnesses were themselves mutation-tested: planting a defect is
   detected within two iterations, with a reproducible seed.
+- `scripts/compare_wheel_payload.py` -- release-audit tooling that proves two
+  commits ship byte-identical executable code, by building both from pristine
+  `git archive` exports and comparing every wheel member under
+  `encryption_helper/`. Turns the one-time candidate-isolation check into
+  reproducible evidence. Deliberately not part of normal CI.
+- `scripts/verify-release-candidate.sh --expect <sha>` -- refuses to produce a
+  provenance record for a commit other than the one named, so a record cannot
+  silently describe the wrong commit after a merge.
 - `tests/test_documentation_accuracy.py` -- asserts the README matches the
   implementation: every documented flag and subcommand exists, exit codes and
   error tables match the code, the stated key sizes and curves are accepted,
