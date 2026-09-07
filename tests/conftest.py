@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2024-2026 HSBC Group Management Services Limited
 """Shared fixtures.
 
 Fixtures here exist so that no test file needs to repeat key generation or

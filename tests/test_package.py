@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2024-2026 HSBC Group Management Services Limited
 """Tests for package-level metadata and the public API surface."""
 
 from __future__ import annotations

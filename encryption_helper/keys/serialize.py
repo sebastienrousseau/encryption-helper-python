@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2024-2026 HSBC Group Management Services Limited
 """Encoding and decoding of keys to and from PEM, DER and OpenSSH formats.
 
 Private keys default to PKCS#8, the modern container format, and are encrypted

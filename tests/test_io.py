@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2024-2026 HSBC Group Management Services Limited
 """Tests for the secure filesystem layer.
 
 These are the tests that would have caught findings C2 (world-readable private
@@ -39,7 +41,7 @@ class TestSecureWriteBytes:
         validator out.
         """
         target = tmp_path / "out.bin"
-        assert secure_write_bytes(target, b"test data") == target
+        assert secure_write_bytes(target, b"test data").path == target
         assert target.read_bytes() == b"test data"
 
     def test_accepts_empty_payload(self, tmp_path):
@@ -50,7 +52,7 @@ class TestSecureWriteBytes:
     @posix_only
     def test_secret_files_are_owner_only(self, tmp_path):
         """Regression test for finding C2."""
-        target = secure_write_bytes(tmp_path / "private.pem", b"secret")
+        target = secure_write_bytes(tmp_path / "private.pem", b"secret").path
         assert stat.S_IMODE(target.stat().st_mode) == SECRET_FILE_MODE
 
     @posix_only
@@ -58,7 +60,7 @@ class TestSecureWriteBytes:
         """A permissive umask must not loosen a secret file."""
         previous = os.umask(0o000)
         try:
-            target = secure_write_bytes(tmp_path / "k.pem", b"secret")
+            target = secure_write_bytes(tmp_path / "k.pem", b"secret").path
         finally:
             os.umask(previous)
         assert stat.S_IMODE(target.stat().st_mode) == SECRET_FILE_MODE
@@ -67,12 +69,12 @@ class TestSecureWriteBytes:
     def test_public_mode_is_honoured(self, tmp_path):
         target = secure_write_bytes(
             tmp_path / "pub.pem", b"public", mode=PUBLIC_FILE_MODE
-        )
+        ).path
         assert stat.S_IMODE(target.stat().st_mode) == PUBLIC_FILE_MODE
 
     @posix_only
     def test_creates_parent_directories_owner_only(self, tmp_path):
-        target = secure_write_bytes(tmp_path / "a" / "b" / "k.pem", b"secret")
+        target = secure_write_bytes(tmp_path / "a" / "b" / "k.pem", b"secret").path
         assert stat.S_IMODE(target.parent.stat().st_mode) == SECRET_DIR_MODE
 
     def test_refuses_to_overwrite_by_default(self, tmp_path):

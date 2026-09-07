@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2024-2026 HSBC Group Management Services Limited
 """Command-line interface for :mod:`encryption_helper`.
 
 This module owns everything to do with presentation: argument parsing, logging
@@ -23,18 +25,23 @@ supply one.
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import logging
 import os
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any, Final, NoReturn
+
+from cryptography.hazmat.primitives.asymmetric.types import PrivateKeyTypes
 
 from . import __version__
 from ._io import (
     PUBLIC_FILE_MODE,
     SECRET_FILE_MODE,
     read_bytes,
+    resolve_destination,
     secure_write_bytes,
 )
 from .crypto import decrypt, encrypt, sign, verify
@@ -42,9 +49,11 @@ from .errors import (
     DecryptionError,
     EncryptionHelperError,
     KeyExistsError,
+    KeyReadError,
     SignatureVerificationError,
 )
 from .keys import (
+    ALLOWED_RSA_KEY_SIZES,
     DEFAULT_RSA_KEY_SIZE,
     SUPPORTED_ALGORITHMS,
     SUPPORTED_CURVES,
@@ -108,11 +117,11 @@ def _emit(args: argparse.Namespace, human: str, payload: dict[str, Any]) -> None
         print(human)
 
 
-def _resolve_passphrase(args: argparse.Namespace) -> bytes | None:
-    """Read the passphrase from the environment or a file.
+def _passphrase_from_source(args: argparse.Namespace) -> bytes | None:
+    """Read a passphrase from an environment variable or a file.
 
     Returns:
-        The passphrase bytes, or :data:`None` if none was requested.
+        The passphrase, or :data:`None` if neither source was requested.
 
     Raises:
         SystemExit: If the named source is missing or empty.
@@ -132,6 +141,112 @@ def _resolve_passphrase(args: argparse.Namespace) -> bytes | None:
         return data
 
     return None
+
+
+def _interactive() -> bool:
+    """Whether a human is present to answer a prompt."""
+    return sys.stdin.isatty() and sys.stderr.isatty()
+
+
+def _prompt_new_passphrase() -> bytes:
+    """Prompt twice for a new passphrase, without echoing it.
+
+    Returns:
+        The confirmed passphrase.
+
+    Raises:
+        SystemExit: If the two entries differ or the passphrase is empty.
+    """
+    first = getpass.getpass("Passphrase for the new private key: ")
+    if not first.strip():
+        _fail_usage(
+            "An empty passphrase does not protect the key. Pass "
+            "--no-passphrase if you intend to store it unencrypted."
+        )
+    if getpass.getpass("Confirm passphrase: ") != first:
+        _fail_usage("The passphrases did not match.")
+    return first.encode()
+
+
+def _new_key_passphrase(args: argparse.Namespace) -> bytes | None:
+    """Decide how a newly generated private key will be protected.
+
+    Storing a private key in plaintext is a real decision, so it has to be a
+    deliberate one. A passphrase comes from an explicit source or an
+    interactive prompt; going without requires ``--no-passphrase``. There is
+    no path that silently produces an unprotected key.
+
+    Returns:
+        The passphrase, or :data:`None` if the user opted out explicitly.
+
+    Raises:
+        SystemExit: If no source was given and none can be established.
+    """
+    if args.no_passphrase:
+        return None
+
+    supplied = _passphrase_from_source(args)
+    if supplied is not None:
+        return supplied
+
+    if _interactive():
+        return _prompt_new_passphrase()
+
+    print(
+        "error: refusing to write an unencrypted private key by default.\n"
+        "  Supply a passphrase with --passphrase-env VAR or "
+        "--passphrase-file PATH,\n"
+        "  or pass --no-passphrase to store the key unencrypted on purpose.",
+        file=sys.stderr,
+    )
+    raise SystemExit(EXIT_USAGE)
+
+
+def _existing_key_passphrase(args: argparse.Namespace) -> bytes | None:
+    """Read the passphrase for an existing key, if one was supplied."""
+    return _passphrase_from_source(args)
+
+
+def _load_private_key(args: argparse.Namespace, path: str) -> PrivateKeyTypes:
+    """Load a private key, prompting for a passphrase only if one is needed.
+
+    Tries without a passphrase first, so an unencrypted key never triggers a
+    pointless prompt, and prompts once if that fails and a human is present.
+
+    Raises:
+        KeyReadError: If the key cannot be loaded.
+    """
+    supplied = _existing_key_passphrase(args)
+    if supplied is not None:
+        return load_private_key_file(path, passphrase=supplied)
+
+    try:
+        return load_private_key_file(path)
+    except KeyReadError:
+        if not _interactive():
+            raise
+    prompt = getpass.getpass(f"Passphrase for {path}: ")
+    return load_private_key_file(path, passphrase=prompt.encode())
+
+
+def _warn_if_inside_git_worktree(directory: Path) -> None:
+    """Warn when key material is about to be written inside a git checkout.
+
+    ``.gitignore`` is not a security boundary -- it can be bypassed with
+    ``git add -f`` -- so the useful defence is to tell the user before the key
+    exists, not after it is committed.
+    """
+    for candidate in [directory, *directory.parents]:
+        if (candidate / ".git").exists():
+            print(
+                f"warning: {directory} is inside the git repository at "
+                f"{candidate}.\n"
+                "         Private keys should not live in a working tree. "
+                "Use --out-dir to\n"
+                "         write them somewhere outside it.",
+                file=sys.stderr,
+            )
+            return
 
 
 def _fail_usage(message: str) -> NoReturn:
@@ -168,44 +283,54 @@ def _write_output(destination: str, data: bytes, *, mode: int, force: bool) -> s
 
 def _cmd_keygen(args: argparse.Namespace) -> int:
     """Generate a key pair and write it to disk."""
-    passphrase = _resolve_passphrase(args)
+    out_dir = resolve_destination(args.out_dir)
+    _warn_if_inside_git_worktree(out_dir)
+
+    passphrase = _new_key_passphrase(args)
     key = generate(args.algorithm, key_size=args.key_size, curve=args.curve)
-    paths = write_key_pair(
+    result = write_key_pair(
         key,
-        args.out_dir,
+        out_dir,
         name=args.name,
         fmt=args.format,
         passphrase=passphrase,
         overwrite=args.force,
     )
-    fingerprint = fingerprint_sha256(key.public_key())
 
     warning = (
-        f"{paths.private_key} is a PRIVATE KEY. Anyone who reads it can "
+        f"{result.private_key_path} is a PRIVATE KEY. Anyone who reads it can "
         "impersonate you and decrypt data sent to you. It is stored with "
         "owner-only permissions; keep it that way, and never commit it or "
         "paste it into a chat or ticket."
     )
-    if not passphrase:
+    if not result.private_key_encrypted:
         warning += (
-            "\nIt is NOT encrypted. Consider --passphrase-env or "
-            "--passphrase-file to protect it at rest."
+            "\nIt is NOT encrypted, because --no-passphrase was given. "
+            "Anything that can read the file has the key."
         )
 
+    size = f"{result.key_size} bits" if result.key_size else "n/a"
     human = (
-        f"Private key: {paths.private_key}\n"
-        f"Public key:  {paths.public_key}\n"
-        f"Fingerprint: {fingerprint}\n\n{warning}"
+        f"{result.algorithm.upper()} key pair generated successfully.\n"
+        f"Algorithm:   {result.algorithm}\n"
+        f"Key size:    {size}\n"
+        f"Private key: {result.private_key_path}\n"
+        f"Public key:  {result.public_key_path}\n"
+        f"Fingerprint: {result.fingerprint}\n"
+        f"Encrypted:   {'yes' if result.private_key_encrypted else 'no'}\n"
+        f"\n{warning}"
     )
     _emit(
         args,
         human,
         {
-            "private_key": str(paths.private_key),
-            "public_key": str(paths.public_key),
-            "fingerprint": fingerprint,
-            "algorithm": args.algorithm,
-            "encrypted": passphrase is not None,
+            "private_key": str(result.private_key_path),
+            "public_key": str(result.public_key_path),
+            "fingerprint": result.fingerprint,
+            "algorithm": result.algorithm,
+            "key_size": result.key_size,
+            "encrypted": result.private_key_encrypted,
+            "replaced": result.replaced,
         },
     )
     if args.show_public:
@@ -228,9 +353,7 @@ def _cmd_encrypt(args: argparse.Namespace) -> int:
 
 def _cmd_decrypt(args: argparse.Namespace) -> int:
     """Decrypt a container with a private key."""
-    private_key = load_private_key_file(
-        args.private_key, passphrase=_resolve_passphrase(args)
-    )
+    private_key = _load_private_key(args, args.private_key)
     plaintext = decrypt(private_key, _read_input(args.input))
     where = _write_output(
         args.output, plaintext, mode=SECRET_FILE_MODE, force=args.force
@@ -245,9 +368,7 @@ def _cmd_decrypt(args: argparse.Namespace) -> int:
 
 def _cmd_sign(args: argparse.Namespace) -> int:
     """Sign data with a private key."""
-    private_key = load_private_key_file(
-        args.private_key, passphrase=_resolve_passphrase(args)
-    )
+    private_key = _load_private_key(args, args.private_key)
     signature = sign(private_key, _read_input(args.input))
     where = _write_output(
         args.output, signature, mode=PUBLIC_FILE_MODE, force=args.force
@@ -278,7 +399,7 @@ def _cmd_fingerprint(args: argparse.Namespace) -> int:
 def _cmd_convert(args: argparse.Namespace) -> int:
     """Convert a key between PEM, DER and OpenSSH encodings."""
     if args.private:
-        key = load_private_key_file(args.input, passphrase=_resolve_passphrase(args))
+        key = _load_private_key(args, args.input)
         data = encode_private_key(key, fmt=args.to, passphrase=None)
         mode = SECRET_FILE_MODE
     else:
@@ -404,11 +525,14 @@ def build_parser() -> argparse.ArgumentParser:
     keygen.add_argument(
         "--key-size",
         type=int,
+        choices=ALLOWED_RSA_KEY_SIZES,
         default=DEFAULT_RSA_KEY_SIZE,
         metavar="BITS",
         help=(
-            f"RSA modulus size in bits (default: {DEFAULT_RSA_KEY_SIZE}). "
-            "Ignored for non-RSA algorithms. Minimum 2048."
+            f"RSA modulus size in bits, one of "
+            f"{', '.join(str(s) for s in ALLOWED_RSA_KEY_SIZES)} "
+            f"(default: {DEFAULT_RSA_KEY_SIZE}). Ignored for non-RSA "
+            "algorithms."
         ),
     )
     keygen.add_argument(
@@ -438,6 +562,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Replace existing key files. The old files are backed up to "
             "timestamped siblings first."
+        ),
+    )
+    keygen.add_argument(
+        "--no-passphrase",
+        action="store_true",
+        help=(
+            "Store the private key unencrypted. Required to skip passphrase "
+            "protection: without it, a passphrase is prompted for, or must be "
+            "supplied via --passphrase-env or --passphrase-file."
         ),
     )
     keygen.add_argument(
@@ -556,6 +689,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         os._exit(EXIT_OK)
     except KeyboardInterrupt:  # pragma: no cover - interactive only
         print("interrupted", file=sys.stderr)
+        return EXIT_ERROR
+    except Exception:
+        # An unexpected exception's text may quote a path, an argument, or a
+        # value the user never meant to surface. Print a fixed message and
+        # send the detail to the log, which the operator controls.
+        logger.exception("Unexpected internal error")
+        print(
+            "error: unexpected internal error. Re-run with --log-level DEBUG "
+            "for details, and please report this.",
+            file=sys.stderr,
+        )
         return EXIT_ERROR
     return result
 

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2024-2026 HSBC Group Management Services Limited
 """Asymmetric key pair generation.
 
 These functions return live key objects and perform no input or output. They
@@ -21,6 +23,7 @@ from cryptography.hazmat.primitives.asymmetric.types import PrivateKeyTypes
 from ..errors import InvalidArgumentError, KeyGenerationError, UnsupportedAlgorithmError
 
 __all__ = [
+    "ALLOWED_RSA_KEY_SIZES",
     "DEFAULT_ALGORITHM",
     "DEFAULT_RSA_KEY_SIZE",
     "MIN_RSA_KEY_SIZE",
@@ -35,6 +38,11 @@ __all__ = [
 #: considered broken for new material and are rejected outright rather than
 #: warned about.
 MIN_RSA_KEY_SIZE: Final = 2048
+
+#: RSA sizes this package will produce. An allowlist rather than a lower
+#: bound: the underlying library accepts arbitrary values, most of which are
+#: interoperability hazards even when they clear the minimum.
+ALLOWED_RSA_KEY_SIZES: Final = (2048, 3072, 4096)
 
 #: Default RSA modulus size. 3072 bits rather than 2048: a key generated today
 #: may still be in service well past the point where 2048 is comfortable, and
@@ -93,6 +101,14 @@ def generate_rsa(
             f"RSA key size {key_size} is too small; the minimum is "
             f"{MIN_RSA_KEY_SIZE} bits. Keys below this offer no meaningful "
             "security margin for new material."
+        )
+        raise InvalidArgumentError(msg)
+    if key_size not in ALLOWED_RSA_KEY_SIZES:
+        allowed = ", ".join(str(size) for size in ALLOWED_RSA_KEY_SIZES)
+        msg = (
+            f"RSA key size {key_size} is not an allowed size; choose one of: "
+            f"{allowed}. Unusual sizes are accepted by the underlying library "
+            "but interoperate poorly."
         )
         raise InvalidArgumentError(msg)
     if public_exponent not in (3, DEFAULT_PUBLIC_EXPONENT):

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2024-2026 HSBC Group Management Services Limited
 """Tests for the command-line interface.
 
 Most cases drive ``main()`` in-process so failures are readable, but the
@@ -25,16 +27,48 @@ from encryption_helper.cli import (
 from ._support import posix_only
 
 
+def keygen_argv(tmp_path, *extra: str) -> list[str]:
+    """Standard keygen arguments: small key for speed, explicit no-passphrase.
+
+    `--no-passphrase` is required rather than incidental: the CLI refuses to
+    write an unencrypted private key without it. See
+    tests/test_security_regressions.py.
+    """
+    return [
+        "keygen",
+        "--out-dir",
+        str(tmp_path),
+        "--key-size",
+        "2048",
+        "--no-passphrase",
+        *extra,
+    ]
+
+
 @pytest.fixture
 def keypair(tmp_path):
     """A generated RSA key pair on disk, plus its directory."""
-    assert main(["keygen", "--out-dir", str(tmp_path), "--key-size", "2048"]) == EXIT_OK
+    assert (
+        main(
+            [
+                "keygen",
+                "--out-dir",
+                str(tmp_path),
+                "--key-size",
+                "2048",
+                "--no-passphrase",
+            ]
+        )
+        == EXIT_OK
+    )
     return tmp_path / "key.pem", tmp_path / "key.pub.pem"
 
 
 class TestKeygen:
     def test_writes_a_usable_pair(self, tmp_path, capsys):
-        assert main(["keygen", "--out-dir", str(tmp_path)]) == EXIT_OK
+        assert (
+            main(["keygen", "--out-dir", str(tmp_path), "--no-passphrase"]) == EXIT_OK
+        )
         assert (tmp_path / "key.pem").exists()
         assert (tmp_path / "key.pub.pem").exists()
         assert "Fingerprint: SHA256:" in capsys.readouterr().out
@@ -44,24 +78,24 @@ class TestKeygen:
 
         Version 0.0.1 printed the full PEM private key to stdout on every run.
         """
-        main(["keygen", "--out-dir", str(tmp_path)])
+        main(["keygen", "--out-dir", str(tmp_path), "--no-passphrase"])
         captured = capsys.readouterr()
         assert "BEGIN PRIVATE KEY" not in captured.out
         assert "BEGIN PRIVATE KEY" not in captured.err
         assert "BEGIN RSA PRIVATE KEY" not in captured.out
 
     def test_warns_that_the_key_is_secret(self, tmp_path, capsys):
-        main(["keygen", "--out-dir", str(tmp_path)])
+        main(["keygen", "--out-dir", str(tmp_path), "--no-passphrase"])
         assert "PRIVATE KEY" in capsys.readouterr().out
 
     def test_warns_when_the_key_is_unencrypted(self, tmp_path, capsys):
-        main(["keygen", "--out-dir", str(tmp_path)])
+        main(["keygen", "--out-dir", str(tmp_path), "--no-passphrase"])
         assert "NOT encrypted" in capsys.readouterr().out
 
     @posix_only
     def test_private_key_is_owner_only(self, tmp_path):
         """Regression test for finding C2."""
-        main(["keygen", "--out-dir", str(tmp_path)])
+        main(["keygen", "--out-dir", str(tmp_path), "--no-passphrase"])
         assert stat.S_IMODE((tmp_path / "key.pem").stat().st_mode) == 0o600
 
     def test_does_not_write_into_the_current_directory_by_surprise(
@@ -69,38 +103,71 @@ class TestKeygen:
     ):
         """0.0.1 always created ./keys/pem relative to the process cwd."""
         monkeypatch.chdir(tmp_path)
-        main(["keygen"])
+        main(["keygen", "--no-passphrase"])
         assert not (tmp_path / "keys").exists()
         assert (tmp_path / "key.pem").exists()
 
     @pytest.mark.parametrize("algorithm", ["rsa", "ed25519", "ecdsa"])
     def test_algorithms(self, tmp_path, algorithm):
-        args = ["keygen", "--out-dir", str(tmp_path), "--algorithm", algorithm]
+        args = [
+            "keygen",
+            "--out-dir",
+            str(tmp_path),
+            "--algorithm",
+            algorithm,
+            "--no-passphrase",
+        ]
         if algorithm == "rsa":
             args += ["--key-size", "2048"]
         assert main(args) == EXIT_OK
 
     def test_rejects_weak_key_size(self, tmp_path, capsys):
-        code = main(["keygen", "--out-dir", str(tmp_path), "--key-size", "512"])
-        assert code == EXIT_ERROR
-        assert "too small" in capsys.readouterr().err
+        with pytest.raises(SystemExit) as excinfo:
+            main(["keygen", "--out-dir", str(tmp_path), "--key-size", "512"])
+        assert excinfo.value.code == EXIT_USAGE
+        assert "invalid choice" in capsys.readouterr().err
 
     def test_existing_key_exits_three(self, tmp_path, capsys):
         """Regression test for finding C6."""
-        main(["keygen", "--out-dir", str(tmp_path), "--key-size", "2048"])
+        main(
+            [
+                "keygen",
+                "--out-dir",
+                str(tmp_path),
+                "--key-size",
+                "2048",
+                "--no-passphrase",
+            ]
+        )
         original = (tmp_path / "key.pem").read_bytes()
 
-        code = main(["keygen", "--out-dir", str(tmp_path), "--key-size", "2048"])
+        code = main(
+            [
+                "keygen",
+                "--out-dir",
+                str(tmp_path),
+                "--key-size",
+                "2048",
+                "--no-passphrase",
+            ]
+        )
         assert code == EXIT_KEY_EXISTS
-        assert "already exists" in capsys.readouterr().err
+        assert "already exist" in capsys.readouterr().err
         assert (tmp_path / "key.pem").read_bytes() == original
 
     def test_force_replaces_and_backs_up(self, tmp_path):
-        main(["keygen", "--out-dir", str(tmp_path), "--key-size", "2048"])
-        original = (tmp_path / "key.pem").read_bytes()
-        code = main(
-            ["keygen", "--out-dir", str(tmp_path), "--key-size", "2048", "--force"]
+        main(
+            [
+                "keygen",
+                "--out-dir",
+                str(tmp_path),
+                "--key-size",
+                "2048",
+                "--no-passphrase",
+            ]
         )
+        original = (tmp_path / "key.pem").read_bytes()
+        code = main(keygen_argv(tmp_path, "--force"))
         assert code == EXIT_OK
         assert (tmp_path / "key.pem").read_bytes() != original
         assert len(list(tmp_path.glob("key.pem.bak-*"))) == 1
@@ -184,7 +251,17 @@ class TestKeygen:
         assert excinfo.value.code == EXIT_USAGE
 
     def test_json_output(self, tmp_path, capsys):
-        main(["--json", "keygen", "--out-dir", str(tmp_path), "--key-size", "2048"])
+        main(
+            [
+                "--json",
+                "keygen",
+                "--out-dir",
+                str(tmp_path),
+                "--key-size",
+                "2048",
+                "--no-passphrase",
+            ]
+        )
         payload = json.loads(capsys.readouterr().out)
         assert payload["fingerprint"].startswith("SHA256:")
         assert payload["encrypted"] is False
@@ -428,7 +505,17 @@ class TestGlobalBehaviour:
         assert excinfo.value.code == EXIT_USAGE
 
     def test_quiet_suppresses_normal_output(self, tmp_path, capsys):
-        main(["--quiet", "keygen", "--out-dir", str(tmp_path), "--key-size", "2048"])
+        main(
+            [
+                "--quiet",
+                "keygen",
+                "--out-dir",
+                str(tmp_path),
+                "--key-size",
+                "2048",
+                "--no-passphrase",
+            ]
+        )
         assert capsys.readouterr().out == ""
 
     def test_overwriting_output_requires_force(self, tmp_path, keypair, capsys):
@@ -473,14 +560,28 @@ class TestInstalledConsoleScript:
             assert command in result.stdout
 
     def test_keygen_end_to_end(self, tmp_path):
-        result = self._run("keygen", "--out-dir", str(tmp_path), "--key-size", "2048")
+        result = self._run(
+            "keygen",
+            "--out-dir",
+            str(tmp_path),
+            "--key-size",
+            "2048",
+            "--no-passphrase",
+        )
         assert result.returncode == EXIT_OK
         assert b"BEGIN PRIVATE KEY" not in result.stdout
         assert (tmp_path / "key.pem").exists()
 
     def test_streaming_round_trip_through_pipes(self, tmp_path):
         assert (
-            self._run("keygen", "--out-dir", str(tmp_path), "--key-size", "2048")
+            self._run(
+                "keygen",
+                "--out-dir",
+                str(tmp_path),
+                "--key-size",
+                "2048",
+                "--no-passphrase",
+            )
         ).returncode == EXIT_OK
 
         encrypted = self._run(
@@ -519,8 +620,22 @@ class TestInstalledConsoleScript:
 
     @posix_only
     def test_exit_code_for_existing_key(self, tmp_path):
-        self._run("keygen", "--out-dir", str(tmp_path), "--key-size", "2048")
-        result = self._run("keygen", "--out-dir", str(tmp_path), "--key-size", "2048")
+        self._run(
+            "keygen",
+            "--out-dir",
+            str(tmp_path),
+            "--key-size",
+            "2048",
+            "--no-passphrase",
+        )
+        result = self._run(
+            "keygen",
+            "--out-dir",
+            str(tmp_path),
+            "--key-size",
+            "2048",
+            "--no-passphrase",
+        )
         assert result.returncode == EXIT_KEY_EXISTS
 
 
@@ -543,7 +658,17 @@ class TestLoggingFlags:
             captured["level"] = logging_module.getLevelName(kwargs["level"])
 
         monkeypatch.setattr(logging_module, "basicConfig", fake_basic_config)
-        main([*argv, "keygen", "--out-dir", str(tmp_path), "--key-size", "2048"])
+        main(
+            [
+                *argv,
+                "keygen",
+                "--out-dir",
+                str(tmp_path),
+                "--key-size",
+                "2048",
+                "--no-passphrase",
+            ]
+        )
         assert captured["level"] == expected
 
 
@@ -573,6 +698,41 @@ class TestStdio:
         assert (tmp_path / "o.bin").exists()
 
     def test_show_public_writes_the_public_key(self, tmp_path, capsysbinary):
+        main(keygen_argv(tmp_path, "--show-public"))
+        out = capsysbinary.readouterr().out
+        assert b"-----BEGIN PUBLIC KEY-----" in out
+        assert b"BEGIN PRIVATE KEY" not in out
+
+
+class TestPassphrasePrompting:
+    """Loading an existing key prompts only when it is actually needed."""
+
+    def test_unencrypted_key_never_prompts(self, tmp_path, keypair, monkeypatch):
+        def explode(_prompt):
+            msg = "should not have prompted for an unencrypted key"
+            raise AssertionError(msg)
+
+        monkeypatch.setattr("getpass.getpass", explode)
+        private, _ = keypair
+        (tmp_path / "m.txt").write_bytes(b"data")
+        assert (
+            main(
+                [
+                    "-q",
+                    "sign",
+                    "--private-key",
+                    str(private),
+                    "--in",
+                    str(tmp_path / "m.txt"),
+                    "--out",
+                    str(tmp_path / "m.sig"),
+                ]
+            )
+            == EXIT_OK
+        )
+
+    def test_encrypted_key_prompts_when_interactive(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("EH_PASS", "s3cret")
         main(
             [
                 "keygen",
@@ -580,9 +740,80 @@ class TestStdio:
                 str(tmp_path),
                 "--key-size",
                 "2048",
-                "--show-public",
+                "--passphrase-env",
+                "EH_PASS",
             ]
         )
-        out = capsysbinary.readouterr().out
-        assert b"-----BEGIN PUBLIC KEY-----" in out
-        assert b"BEGIN PRIVATE KEY" not in out
+        (tmp_path / "m.txt").write_bytes(b"data")
+        monkeypatch.delenv("EH_PASS")
+        monkeypatch.setattr("encryption_helper.cli._interactive", lambda: True)
+        monkeypatch.setattr("getpass.getpass", lambda _prompt: "s3cret")
+
+        assert (
+            main(
+                [
+                    "-q",
+                    "sign",
+                    "--private-key",
+                    str(tmp_path / "key.pem"),
+                    "--in",
+                    str(tmp_path / "m.txt"),
+                    "--out",
+                    str(tmp_path / "m.sig"),
+                ]
+            )
+            == EXIT_OK
+        )
+
+    def test_encrypted_key_fails_cleanly_when_not_interactive(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("EH_PASS", "s3cret")
+        main(
+            [
+                "keygen",
+                "--out-dir",
+                str(tmp_path),
+                "--key-size",
+                "2048",
+                "--passphrase-env",
+                "EH_PASS",
+            ]
+        )
+        (tmp_path / "m.txt").write_bytes(b"data")
+        monkeypatch.delenv("EH_PASS")
+        monkeypatch.setattr("encryption_helper.cli._interactive", lambda: False)
+
+        code = main(
+            [
+                "sign",
+                "--private-key",
+                str(tmp_path / "key.pem"),
+                "--in",
+                str(tmp_path / "m.txt"),
+                "--out",
+                str(tmp_path / "m.sig"),
+            ]
+        )
+        assert code == EXIT_ERROR
+        assert "Could not load the private key" in capsys.readouterr().err
+
+
+class TestUnexpectedErrors:
+    def test_unexpected_exception_is_not_echoed_to_the_user(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Exception text may quote paths or values the user never exposed."""
+        secret_detail = "INTERNAL-DETAIL-c4f9"
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError(secret_detail)
+
+        monkeypatch.setattr("encryption_helper.cli.generate", boom)
+        code = main(keygen_argv(tmp_path))
+        captured = capsys.readouterr()
+
+        assert code == EXIT_ERROR
+        assert secret_detail not in captured.out
+        assert secret_detail not in captured.err
+        assert "unexpected internal error" in captured.err

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2024-2026 HSBC Group Management Services Limited
 """Loading keys from bytes or files, with format auto-detection.
 
 The loaders accept PEM, DER and OpenSSH input without the caller having to say

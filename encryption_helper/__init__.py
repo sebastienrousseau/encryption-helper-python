@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2024-2026 HSBC Group Management Services Limited
 """Generate, protect and use asymmetric key pairs.
 
 ``encryption_helper`` is a small library and command-line tool for the everyday
@@ -57,13 +59,14 @@ from .errors import (
     InvalidArgumentError,
     KeyExistsError,
     KeyGenerationError,
+    KeyPairValidationError,
     KeyReadError,
     KeyWriteError,
     SignatureVerificationError,
     UnsupportedAlgorithmError,
 )
 from .keys import (
-    KeyPairPaths,
+    KeyGenerationResult,
     encode_private_key,
     encode_public_key,
     fingerprint_sha256,
@@ -94,7 +97,8 @@ __all__ = [
     "InvalidArgumentError",
     "KeyExistsError",
     "KeyGenerationError",
-    "KeyPairPaths",
+    "KeyGenerationResult",
+    "KeyPairValidationError",
     "KeyReadError",
     "KeyWriteError",
     "SignatureVerificationError",
