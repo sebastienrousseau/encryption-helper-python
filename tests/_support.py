@@ -19,13 +19,16 @@ posix_only = pytest.mark.skipif(
 
 
 def _in_source_tree() -> bool:
-    """Whether the suite is running inside the git working tree.
+    """Whether this suite is the one living in the git working tree.
 
-    The release gate installs the wheel and runs the tests from a scratch
-    directory, so repository-hygiene checks -- which shell out to git against
-    the source tree -- have nothing to inspect there. They are skipped rather
-    than failing, because they assert something about the repository, not
-    about the package.
+    The release gate copies ``tests/`` to a scratch directory and runs it
+    against an installed wheel, so repository-hygiene checks -- which shell out
+    to git against the source tree -- have nothing meaningful to inspect there.
+
+    Merely being *inside* a git repository is not enough to decide this: the
+    scratch directory may itself sit under the repository. The precise
+    question is whether this file sits directly beside the package source, so
+    that is what is asked.
     """
     try:
         completed = subprocess.run(
@@ -33,12 +36,16 @@ def _in_source_tree() -> bool:
             capture_output=True,
             text=True,
             check=False,
+            cwd=Path(__file__).resolve().parent,
         )
     except OSError:  # pragma: no cover - git absent
         return False
     if completed.returncode != 0:
         return False
-    return (Path(completed.stdout.strip()) / "pyproject.toml").is_file()
+
+    toplevel = Path(completed.stdout.strip()).resolve()
+    here = Path(__file__).resolve()
+    return here.parents[1] == toplevel and (toplevel / "encryption_helper").is_dir()
 
 
 #: Repository-hygiene checks that only make sense in the source tree.
