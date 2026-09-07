@@ -85,7 +85,12 @@ VENV_PY="$WORKDIR/venv/bin/python"
 "$WORKDIR/venv/bin/pip" install --quiet --upgrade pip
 "$WORKDIR/venv/bin/pip" install --quiet "$WHEEL" pytest pytest-cov hypothesis
 
-RESOLVED="$("$VENV_PY" -c 'import encryption_helper; print(encryption_helper.__file__)')"
+# Run from the scratch directory, never the repository: Python prepends the
+# current directory to sys.path, so importing from the repo root would resolve
+# the working tree and shadow the very wheel we are trying to verify.
+# PYTHONSAFEPATH additionally suppresses that prepending on 3.11+.
+export PYTHONSAFEPATH=1
+RESOLVED="$(cd "$WORKDIR" && "$VENV_PY" -c 'import encryption_helper; print(encryption_helper.__file__)')"
 echo "import resolves to: $RESOLVED"
 
 case "$RESOLVED" in
@@ -102,7 +107,7 @@ if "$WORKDIR/venv/bin/pip" list --editable 2>/dev/null | grep -qi encryption; th
   exit 1
 fi
 
-INSTALLED_VERSION="$("$VENV_PY" -c 'import encryption_helper; print(encryption_helper.__version__)')"
+INSTALLED_VERSION="$(cd "$WORKDIR" && "$VENV_PY" -c 'import encryption_helper; print(encryption_helper.__version__)')"
 echo "version: $INSTALLED_VERSION"
 
 # --- 4. Test the installed wheel --------------------------------------------
@@ -129,7 +134,7 @@ SITE_PKG="$(dirname "$RESOLVED")"
 
 echo
 echo "=== Packaging invariants ==="
-"$VENV_PY" - "$WHEEL" <<'PY'
+(cd "$WORKDIR" && "$VENV_PY" - "$WHEEL") <<'PY'
 import sys, zipfile
 names = zipfile.ZipFile(sys.argv[1]).namelist()
 required = {
