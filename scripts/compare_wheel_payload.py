@@ -42,6 +42,78 @@ from pathlib import Path
 DEFAULT_PREFIX = "encryption_helper/"
 
 
+def repository_root() -> Path:
+    """Locate the repository from this script's own path, never from the CWD.
+
+    Asking git "which repository am I standing in" answers a question about
+    the shell, not about this tool. If the working directory has drifted -- a
+    failure this project has hit more than once -- that answer is silently
+    wrong, and a release audit that certifies the wrong checkout is worse than
+    no audit at all.
+
+    Returns:
+        The absolute repository root.
+
+    Raises:
+        RuntimeError: If this script is not inside a checkout of this project.
+    """
+    script = Path(__file__).resolve()
+    probe = subprocess.run(  # noqa: S603
+        ["git", "-C", str(script.parent), "rev-parse", "--show-toplevel"],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if probe.returncode != 0:
+        msg = f"{script} is not inside a git repository"
+        raise RuntimeError(msg)
+
+    root = Path(probe.stdout.strip()).resolve()
+    if not script.is_relative_to(root):
+        msg = f"{script} is outside the repository it resolved ({root})"
+        raise RuntimeError(msg)
+
+    pyproject = root / "pyproject.toml"
+    if (
+        not pyproject.is_file()
+        or 'name = "encryption-helper"' not in pyproject.read_text(encoding="utf-8")
+    ):
+        msg = f"{root} is not the encryption-helper repository"
+        raise RuntimeError(msg)
+    return root
+
+
+def report(
+    payload_a: dict[str, str], payload_b: dict[str, str], outside: list[str]
+) -> bool:
+    """Print the comparison. Returns whether the payload is identical."""
+    only_a = sorted(set(payload_a) - set(payload_b))
+    only_b = sorted(set(payload_b) - set(payload_a))
+    differing = sorted(
+        n for n in set(payload_a) & set(payload_b) if payload_a[n] != payload_b[n]
+    )
+    identical = not (only_a or only_b or differing)
+
+    if identical:
+        print(f"PAYLOAD IDENTICAL: all {len(payload_a)} members match.")
+    else:
+        print("PAYLOAD DIFFERS:")
+        for name in only_a:
+            print(f"  only in A:  {name}")
+        for name in only_b:
+            print(f"  only in B:  {name}")
+        for name in differing:
+            print(f"  differs:    {name}")
+            print(f"                A {payload_a[name]}")
+            print(f"                B {payload_b[name]}")
+    if outside:
+        print()
+        print("Outside the prefix (informational, not judged):")
+        for name in outside:
+            print(f"  differs:    {name}")
+    return identical
+
+
 def run(
     command: list[str], cwd: Path | None = None
 ) -> subprocess.CompletedProcess[str]:
@@ -61,8 +133,7 @@ def build_wheel(repo: Path, ref: str, workdir: Path, builder: Path) -> Path:
     source = workdir / f"src-{ref.replace('/', '_')}"
     source.mkdir(parents=True)
     archive = subprocess.run(  # noqa: S603
-        ["git", "archive", "--format=tar", ref],  # noqa: S607
-        cwd=repo,
+        ["git", "-C", str(repo), "archive", "--format=tar", ref],  # noqa: S607
         capture_output=True,
         check=True,
     )
@@ -109,7 +180,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", dest="as_json")
     args = parser.parse_args(argv)
 
-    repo = Path(run(["git", "rev-parse", "--show-toplevel"]).stdout.strip())
+    try:
+        repo = repository_root()
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(f"repository: {repo}")
+    (repo / "build").mkdir(exist_ok=True)
     workdir = Path(tempfile.mkdtemp(prefix="wheel-compare-", dir=repo / "build"))
 
     try:
@@ -142,11 +219,15 @@ def main(argv: list[str] | None = None) -> int:
             and all_members(wheel_a)[name] != all_members(wheel_b)[name]
         )
 
-        report = {
+        report_data = {
             "ref_a": args.ref_a,
             "ref_b": args.ref_b,
-            "sha_a": run(["git", "rev-parse", args.ref_a]).stdout.strip(),
-            "sha_b": run(["git", "rev-parse", args.ref_b]).stdout.strip(),
+            "sha_a": run(
+                ["git", "-C", str(repo), "rev-parse", args.ref_a]
+            ).stdout.strip(),
+            "sha_b": run(
+                ["git", "-C", str(repo), "rev-parse", args.ref_b]
+            ).stdout.strip(),
             "prefix": args.prefix,
             "members_compared": len(payload_a),
             "payload_identical": identical,
@@ -157,30 +238,15 @@ def main(argv: list[str] | None = None) -> int:
         }
 
         if args.as_json:
-            print(json.dumps(report, indent=2))
+            print(json.dumps(report_data, indent=2))
+            identical = report_data["payload_identical"]
         else:
-            print(f"ref A: {args.ref_a}  ({report['sha_a']})")
-            print(f"ref B: {args.ref_b}  ({report['sha_b']})")
+            print(f"ref A: {args.ref_a}  ({report_data['sha_a']})")
+            print(f"ref B: {args.ref_b}  ({report_data['sha_b']})")
             print(f"prefix: {args.prefix}")
             print(f"members compared: {len(payload_a)}")
             print()
-            if identical:
-                print(f"PAYLOAD IDENTICAL: all {len(payload_a)} members match.")
-            else:
-                print("PAYLOAD DIFFERS:")
-                for name in only_a:
-                    print(f"  only in A:  {name}")
-                for name in only_b:
-                    print(f"  only in B:  {name}")
-                for name in differing:
-                    print(f"  differs:    {name}")
-                    print(f"                A {payload_a[name]}")
-                    print(f"                B {payload_b[name]}")
-            if outside:
-                print()
-                print("Outside the prefix (informational, not judged):")
-                for name in outside:
-                    print(f"  differs:    {name}")
+            identical = report(payload_a, payload_b, outside)
 
         return 0 if identical else 1
     except RuntimeError as exc:
