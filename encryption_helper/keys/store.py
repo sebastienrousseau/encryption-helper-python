@@ -1,26 +1,50 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2024-2026 HSBC Group Management Services Limited
 """Writing key pairs to disk safely.
 
-This module is the only place in the package that writes key material. It
-exists so the permission and overwrite rules live in exactly one location
-rather than being restated at each call site.
+This module is the only place in the package that writes key material, so the
+permission and overwrite rules live in exactly one auditable location.
 
 Private keys are written at mode ``0600`` inside a ``0700`` directory. Public
 keys are written at ``0644``: they are meant to be shared, and treating them as
-secret leads people to protect the wrong file.
+secret teaches people to protect the wrong file.
+
+Writing a *pair* is the interesting part. Ordinary filesystems offer no
+cross-file transaction, so this module approximates one:
+
+1. **Pre-flight.** Both destinations are checked before anything is written, so
+   the common conflict is caught before any file is touched.
+2. **Validation.** The serialised bytes are parsed back and the public halves
+   compared, so a mismatched pair can never reach the disk.
+3. **Rollback.** If the second write fails, the first is undone -- removed if it
+   was new, or restored from its backup if it replaced something.
+
+The result is that a failure leaves either the previous state or the complete
+new pair, never a private key whose public counterpart is missing or stale.
 """
 
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
-from typing import NamedTuple
 
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
 from cryptography.hazmat.primitives.asymmetric.types import PrivateKeyTypes
 
-from .._io import PUBLIC_FILE_MODE, SECRET_FILE_MODE, secure_write_bytes
+from .._io import (
+    PUBLIC_FILE_MODE,
+    SECRET_FILE_MODE,
+    WriteOutcome,
+    resolve_destination,
+    secure_write_bytes,
+)
+from ..errors import KeyExistsError, KeyPairValidationError, KeyWriteError
+from .fingerprint import fingerprint_sha256
+from .load import load_private_key, load_public_key
 from .serialize import encode_private_key, encode_public_key
 
-__all__ = ["KeyPairPaths", "write_key_pair"]
+__all__ = ["DEFAULT_KEY_NAME", "KeyGenerationResult", "write_key_pair"]
 
 #: Default stem for generated key files.
 DEFAULT_KEY_NAME = "key"
@@ -32,16 +56,152 @@ _SUFFIXES = {
 }
 
 
-class KeyPairPaths(NamedTuple):
-    """Where a generated key pair was written.
+@dataclass(frozen=True, slots=True)
+class KeyGenerationResult:
+    """Where a key pair was written, and safe metadata describing it.
+
+    Note what this deliberately does *not* contain: the private key, the
+    serialised private bytes, the passphrase, or any private RSA parameter.
+    A caller cannot accidentally log a secret from this object, because the
+    secret is not in it.
 
     Attributes:
-        private_key: Path of the private key file, mode ``0600``.
-        public_key: Path of the public key file, mode ``0644``.
+        private_key_path: Path of the private key file, mode ``0600``.
+        public_key_path: Path of the public key file, mode ``0644``.
+        algorithm: Algorithm name, for example ``"rsa"`` or ``"ed25519"``.
+        key_size: Modulus or curve size in bits, where the concept applies.
+        fingerprint: SHA-256 fingerprint of the public key, matching
+            ``ssh-keygen -lf``.
+        private_key_encrypted: Whether the stored private key is passphrase
+            protected.
+        replaced: Whether existing files were replaced.
     """
 
-    private_key: Path
-    public_key: Path
+    private_key_path: Path
+    public_key_path: Path
+    algorithm: str
+    key_size: int | None
+    fingerprint: str
+    private_key_encrypted: bool
+    replaced: bool = False
+
+
+def describe_key(key: PrivateKeyTypes) -> tuple[str, int | None]:
+    """Return the algorithm name and size in bits for a private key.
+
+    Args:
+        key: Key to describe.
+
+    Returns:
+        A ``(algorithm, key_size)`` pair. ``key_size`` is :data:`None` for
+        algorithms where the concept does not apply.
+    """
+    if isinstance(key, rsa.RSAPrivateKey):
+        return "rsa", key.key_size
+    if isinstance(key, ed25519.Ed25519PrivateKey):
+        return "ed25519", 256
+    if isinstance(key, ec.EllipticCurvePrivateKey):
+        return "ecdsa", key.curve.key_size
+    return type(key).__name__.lower(), None
+
+
+def _validate_pair(
+    key: PrivateKeyTypes,
+    private_bytes: bytes,
+    public_bytes: bytes,
+    passphrase: bytes | None,
+    fmt: str,
+) -> None:
+    """Check the serialised pair parses back and matches, before committing.
+
+    The underlying library is trusted to produce correct output; this guards
+    the seam around it -- serialisation, format selection and passphrase
+    handling -- where a future change could plausibly emit a mismatched pair.
+
+    Args:
+        key: The in-memory private key.
+        private_bytes: Serialised private key.
+        public_bytes: Serialised public key.
+        passphrase: Passphrase used, if any.
+        fmt: Encoding used.
+
+    Raises:
+        KeyPairValidationError: If either half fails to parse, or the two do
+            not correspond to the same key.
+    """
+    reference = encode_public_key(key.public_key(), fmt="der")
+    try:
+        reloaded_private = load_private_key(private_bytes, passphrase=passphrase)
+        reloaded_public = load_public_key(public_bytes)
+    except Exception as exc:
+        msg = (
+            f"The generated {fmt} key pair could not be parsed back after "
+            "serialisation; refusing to write it."
+        )
+        raise KeyPairValidationError(msg) from exc
+
+    if encode_public_key(reloaded_private.public_key(), fmt="der") != reference:
+        msg = (
+            "The serialised private key does not correspond to the generated "
+            "key; refusing to write it."
+        )
+        raise KeyPairValidationError(msg)
+
+    if encode_public_key(reloaded_public, fmt="der") != reference:
+        msg = (
+            "The serialised public key does not match the private key; "
+            "refusing to write a mismatched pair."
+        )
+        raise KeyPairValidationError(msg)
+
+
+def _preflight(private_path: Path, public_path: Path, *, overwrite: bool) -> None:
+    """Reject an impossible or destructive write before touching the disk.
+
+    Raises:
+        KeyExistsError: If a destination exists and ``overwrite`` is false.
+        KeyWriteError: If the two paths collide or a destination is a
+            directory.
+    """
+    if private_path == public_path:
+        msg = (
+            f"The private and public key would both be written to "
+            f"{private_path}. Choose a different name or format."
+        )
+        raise KeyWriteError(msg)
+
+    for path in (private_path, public_path):
+        if path.is_dir():
+            msg = f"{path} is a directory, not a file."
+            raise KeyWriteError(msg)
+
+    if overwrite:
+        return
+
+    existing = [str(p) for p in (private_path, public_path) if p.exists()]
+    if existing:
+        msg = (
+            f"Key files already exist: {', '.join(existing)}. Refusing to "
+            "overwrite key material, because replacing it cannot be undone. "
+            "Choose a different --out-dir or --name, or pass --force to "
+            "replace them; the existing files will be backed up first."
+        )
+        raise KeyExistsError(msg)
+
+
+def _undo(outcome: WriteOutcome) -> None:
+    """Reverse a completed write during rollback.
+
+    A failure here is swallowed: it must not mask the original error that
+    triggered the rollback.
+    """
+    try:
+        if outcome.backup is not None:
+            outcome.backup.replace(outcome.path)
+        elif not outcome.replaced:
+            outcome.path.unlink(missing_ok=True)
+    except OSError:  # pragma: no cover - best effort during failure handling
+        pass
 
 
 def write_key_pair(  # noqa: PLR0913 - all but two are keyword-only options
@@ -52,15 +212,14 @@ def write_key_pair(  # noqa: PLR0913 - all but two are keyword-only options
     fmt: str = "pem",
     passphrase: bytes | None = None,
     overwrite: bool = False,
-) -> KeyPairPaths:
+) -> KeyGenerationResult:
     """Write a private key and its public half to ``directory``.
-
-    The private key is written first. If that fails, no public key is left
-    behind to imply a private key exists.
 
     Args:
         key: Private key to write. The public key is derived from it.
-        directory: Destination directory. Created at mode ``0700`` if absent.
+        directory: Destination directory. ``~`` is expanded and a relative
+            path is resolved against the current working directory. Created at
+            mode ``0700`` if absent.
         name: Filename stem, for example ``"key"`` giving ``key.pem`` and
             ``key.pub.pem``.
         fmt: Output format, one of ``"pem"``, ``"der"``, ``"openssh"``.
@@ -70,30 +229,47 @@ def write_key_pair(  # noqa: PLR0913 - all but two are keyword-only options
             :class:`~encryption_helper.errors.KeyExistsError`.
 
     Returns:
-        The paths written.
+        A :class:`KeyGenerationResult` describing what was written. It contains
+        no secret material.
 
     Raises:
         KeyExistsError: If a destination exists and ``overwrite`` is false.
         KeyWriteError: If a file could not be written.
+        KeyPairValidationError: If the serialised pair fails validation.
         UnsupportedAlgorithmError: If ``fmt`` is not valid for this key type.
         InvalidArgumentError: If ``passphrase`` is present but empty.
     """
     private_suffix, public_suffix = _SUFFIXES.get(fmt.strip().lower(), _SUFFIXES["pem"])
-    base = Path(directory)
+    base = resolve_destination(directory)
+    private_path = base / f"{name}{private_suffix}"
+    public_path = base / f"{name}{public_suffix}"
+
+    _preflight(private_path, public_path, overwrite=overwrite)
 
     private_bytes = encode_private_key(key, fmt=fmt, passphrase=passphrase)
     public_bytes = encode_public_key(key.public_key(), fmt=fmt)
+    _validate_pair(key, private_bytes, public_bytes, passphrase, fmt)
 
-    private_path = secure_write_bytes(
-        base / f"{name}{private_suffix}",
-        private_bytes,
-        mode=SECRET_FILE_MODE,
-        overwrite=overwrite,
+    private_outcome = secure_write_bytes(
+        private_path, private_bytes, mode=SECRET_FILE_MODE, overwrite=overwrite
     )
-    public_path = secure_write_bytes(
-        base / f"{name}{public_suffix}",
-        public_bytes,
-        mode=PUBLIC_FILE_MODE,
-        overwrite=overwrite,
+    try:
+        public_outcome = secure_write_bytes(
+            public_path, public_bytes, mode=PUBLIC_FILE_MODE, overwrite=overwrite
+        )
+    except Exception:
+        # Never leave a private key whose public counterpart is missing or
+        # stale: undo the half-written pair before surfacing the failure.
+        _undo(private_outcome)
+        raise
+
+    algorithm, key_size = describe_key(key)
+    return KeyGenerationResult(
+        private_key_path=private_outcome.path,
+        public_key_path=public_outcome.path,
+        algorithm=algorithm,
+        key_size=key_size,
+        fingerprint=fingerprint_sha256(key.public_key()),
+        private_key_encrypted=passphrase is not None,
+        replaced=private_outcome.replaced or public_outcome.replaced,
     )
-    return KeyPairPaths(private_key=private_path, public_key=public_path)

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2024-2026 HSBC Group Management Services Limited
 """Tests for hybrid envelope encryption.
 
 The tamper tests are the important ones. A cipher that round-trips is easy; a

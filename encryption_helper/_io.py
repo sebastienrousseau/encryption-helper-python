@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2024-2026 HSBC Group Management Services Limited
 """Filesystem primitives for handling secret material safely.
 
 The functions here exist because :func:`open` is the wrong tool for writing a
@@ -24,10 +26,11 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NamedTuple
 
 from .errors import KeyExistsError, KeyReadError, KeyWriteError
 
-__all__ = ["read_bytes", "secure_write_bytes"]
+__all__ = ["WriteOutcome", "read_bytes", "resolve_destination", "secure_write_bytes"]
 
 #: Mode for files containing secret material: owner read/write only.
 SECRET_FILE_MODE = 0o600
@@ -39,6 +42,74 @@ PUBLIC_FILE_MODE = 0o644
 SECRET_DIR_MODE = 0o700
 
 _WINDOWS = sys.platform == "win32"
+
+
+class WriteOutcome(NamedTuple):
+    """What :func:`secure_write_bytes` actually did.
+
+    Callers writing more than one file need this to undo a partial write: it
+    records whether a previous file was displaced, and where it went.
+
+    Attributes:
+        path: The file that was written.
+        backup: Where the previous contents were moved, or :data:`None` if
+            nothing was displaced.
+        replaced: Whether an existing file was replaced.
+    """
+
+    path: Path
+    backup: Path | None
+    replaced: bool
+
+
+def resolve_destination(path: str | os.PathLike[str]) -> Path:
+    """Expand and absolutise a destination path.
+
+    ``~`` is expanded and a relative path is made absolute against the current
+    working directory, so ``--out-dir ~/keys`` writes to the user's home
+    directory rather than creating a directory literally named ``~``.
+
+    The *parent* is resolved, following any symlinks along the way, but the
+    final component is deliberately left alone: resolving it would silently
+    follow a symlink planted at the destination, which is exactly what
+    :func:`secure_write_bytes` refuses to do.
+
+    Args:
+        path: A path, possibly relative or containing ``~``.
+
+    Returns:
+        An absolute path with a resolved parent.
+
+    Example:
+        >>> resolve_destination("~/keys").is_absolute()
+        True
+    """
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    return candidate.parent.resolve() / candidate.name
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Flush a directory entry so a rename survives a crash.
+
+    Renaming a file is atomic, but on many filesystems the *directory entry*
+    recording it is not durable until the directory itself is synced. Failure
+    is ignored: not every platform or filesystem supports this, and it is a
+    durability improvement rather than a correctness requirement.
+    """
+    if _WINDOWS:  # pragma: no cover - Windows cannot open a directory
+        return
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:  # pragma: no cover - unusual filesystem
+        return
+    try:
+        os.fsync(fd)
+    except OSError:  # pragma: no cover - unusual filesystem
+        pass
+    finally:
+        os.close(fd)
 
 
 def _timestamp() -> str:
@@ -101,7 +172,7 @@ def secure_write_bytes(
     mode: int = SECRET_FILE_MODE,
     overwrite: bool = False,
     dir_mode: int = SECRET_DIR_MODE,
-) -> Path:
+) -> WriteOutcome:
     """Write ``data`` to ``path`` atomically with restrictive permissions.
 
     The write goes to a temporary file in the destination directory, which is
@@ -118,7 +189,8 @@ def secure_write_bytes(
         dir_mode: Permission bits for any parent directories created.
 
     Returns:
-        The resolved path that was written.
+        A :class:`WriteOutcome` recording the path written, any backup taken,
+        and whether an existing file was replaced.
 
     Raises:
         KeyExistsError: If the destination exists and ``overwrite`` is
@@ -135,14 +207,16 @@ def secure_write_bytes(
     Example:
         >>> import tempfile, pathlib
         >>> d = pathlib.Path(tempfile.mkdtemp())
-        >>> p = secure_write_bytes(d / "secret.bin", b"payload")
-        >>> p.read_bytes()
+        >>> outcome = secure_write_bytes(d / "secret.bin", b"payload")
+        >>> outcome.path.read_bytes()
         b'payload'
     """
-    target = Path(path)
+    target = resolve_destination(path)
     _reject_symlink(target)
 
-    if target.exists():
+    backup: Path | None = None
+    replaced = target.exists()
+    if replaced:
         if not overwrite:
             msg = (
                 f"{target} already exists. Refusing to overwrite it, because "
@@ -151,7 +225,7 @@ def secure_write_bytes(
                 "file will be backed up first."
             )
             raise KeyExistsError(msg)
-        _backup(target, mode)
+        backup = _backup(target, mode)
 
     parent = target.parent
     try:
@@ -177,13 +251,14 @@ def secure_write_bytes(
             handle.flush()
             os.fsync(handle.fileno())
         tmp_path.replace(target)
+        _fsync_directory(parent)
     except OSError as exc:
         with contextlib.suppress(OSError):
             tmp_path.unlink()
         msg = f"Could not write to {target}: {exc.strerror}"
         raise KeyWriteError(msg) from exc
 
-    return target
+    return WriteOutcome(path=target, backup=backup, replaced=replaced)
 
 
 def read_bytes(path: str | os.PathLike[str]) -> bytes:
@@ -206,7 +281,7 @@ def read_bytes(path: str | os.PathLike[str]) -> bytes:
         >>> read_bytes(d / "data.bin")
         b'hello'
     """
-    source = Path(path)
+    source = Path(path).expanduser()
     try:
         return source.read_bytes()
     except FileNotFoundError as exc:

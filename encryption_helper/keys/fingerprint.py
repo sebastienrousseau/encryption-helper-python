@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2024-2026 HSBC Group Management Services Limited
 """Public key fingerprints.
 
 The fingerprints produced here are byte-identical to those printed by

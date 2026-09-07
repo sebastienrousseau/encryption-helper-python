@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2024-2026 HSBC Group Management Services Limited
 """Entry point for ``python -m encryption_helper``.
 
 All behaviour lives in :mod:`encryption_helper.cli`; this module only wires the

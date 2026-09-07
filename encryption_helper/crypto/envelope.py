@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2024-2026 HSBC Group Management Services Limited
 """Hybrid (envelope) encryption using RSA-OAEP and AES-256-GCM.
 
 RSA cannot encrypt arbitrary-length data. A 3072-bit key with OAEP-SHA256 can

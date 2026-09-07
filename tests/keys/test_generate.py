@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2024-2026 HSBC Group Management Services Limited
 """Tests for key generation."""
 
 from __future__ import annotations
@@ -6,6 +8,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
 from encryption_helper.errors import InvalidArgumentError, UnsupportedAlgorithmError
 from encryption_helper.keys import (
+    ALLOWED_RSA_KEY_SIZES,
     DEFAULT_RSA_KEY_SIZE,
     MIN_RSA_KEY_SIZE,
     generate,
@@ -34,6 +37,19 @@ class TestGenerateRSA:
 
     def test_minimum_is_2048(self):
         assert MIN_RSA_KEY_SIZE == 2048
+
+    @pytest.mark.parametrize("size", [2049, 3000, 4095, 8192])
+    def test_rejects_sizes_outside_the_allowlist(self, size):
+        """An allowlist, not just a floor.
+
+        The underlying library accepts many sizes that clear the 2048 minimum
+        but interoperate poorly. Those are refused too.
+        """
+        with pytest.raises(InvalidArgumentError, match="not an allowed size"):
+            generate_rsa(key_size=size)
+
+    def test_allowlist_contents(self):
+        assert ALLOWED_RSA_KEY_SIZES == (2048, 3072, 4096)
 
     def test_rejects_unsupported_exponent(self):
         with pytest.raises(InvalidArgumentError, match="public exponent"):

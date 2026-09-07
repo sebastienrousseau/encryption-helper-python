@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2024-2026 HSBC Group Management Services Limited
 """Tests for public key fingerprints.
 
 The important test here is the cross-check against ``ssh-keygen``: a

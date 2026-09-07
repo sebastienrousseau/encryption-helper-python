@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2024-2026 HSBC Group Management Services Limited
 """Exception hierarchy for the :mod:`encryption_helper` package.
 
 Every error raised deliberately by this package derives from
@@ -16,6 +18,7 @@ __all__ = [
     "InvalidArgumentError",
     "KeyExistsError",
     "KeyGenerationError",
+    "KeyPairValidationError",
     "KeyReadError",
     "KeyWriteError",
     "SignatureVerificationError",
@@ -41,6 +44,15 @@ class UnsupportedAlgorithmError(InvalidArgumentError):
 
 class KeyGenerationError(EncryptionHelperError):
     """A key pair could not be generated."""
+
+
+class KeyPairValidationError(EncryptionHelperError):
+    """A generated key pair failed its self-check before being written.
+
+    Raised when serialised key material does not parse back, or when the
+    private and public halves do not correspond. Nothing is written to disk
+    when this is raised.
+    """
 
 
 class KeyExistsError(EncryptionHelperError):

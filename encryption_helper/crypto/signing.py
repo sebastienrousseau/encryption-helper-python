@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2024-2026 HSBC Group Management Services Limited
 """Digital signatures over RSA-PSS, Ed25519 and ECDSA.
 
 The algorithm and parameters are chosen from the key type, so a caller cannot

@@ -1,9 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2024-2026 HSBC Group Management Services Limited
 """Key generation, serialisation, loading, storage and fingerprinting."""
 
 from __future__ import annotations
 
 from .fingerprint import fingerprint_sha256
 from .generate import (
+    ALLOWED_RSA_KEY_SIZES,
     DEFAULT_ALGORITHM,
     DEFAULT_RSA_KEY_SIZE,
     MIN_RSA_KEY_SIZE,
@@ -21,15 +24,17 @@ from .load import (
     load_public_key_file,
 )
 from .serialize import encode_private_key, encode_public_key
-from .store import KeyPairPaths, write_key_pair
+from .store import KeyGenerationResult, describe_key, write_key_pair
 
 __all__ = [
+    "ALLOWED_RSA_KEY_SIZES",
     "DEFAULT_ALGORITHM",
     "DEFAULT_RSA_KEY_SIZE",
     "MIN_RSA_KEY_SIZE",
     "SUPPORTED_ALGORITHMS",
     "SUPPORTED_CURVES",
-    "KeyPairPaths",
+    "KeyGenerationResult",
+    "describe_key",
     "encode_private_key",
     "encode_public_key",
     "fingerprint_sha256",
