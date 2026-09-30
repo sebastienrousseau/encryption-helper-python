@@ -6,10 +6,10 @@ them with priority.
 
 ## Supported versions
 
-| Version | Supported | Notes |
-| ------- | --------- | ----- |
-| 0.0.2   | :white_check_mark: | Current release line |
-| 0.0.1   | :x: | **Withdrawn — see the advisory below. Rotate any key it generated.** |
+| Version | Supported |
+| ------- | --------- |
+| 0.0.2   | :white_check_mark: |
+| 0.0.1   | :x: |
 
 ## Reporting a vulnerability
 
@@ -70,9 +70,3 @@ Out of scope:
   read access to the private key file.
 - Missing hardening that does not lead to a concrete exploit, though we welcome
   these as normal issues.
-
-## Known advisories
-
-- [`SECURITY-ADVISORY-0001`](./docs/SECURITY-ADVISORY-0001.md) — private key
-  exposure in version 0.0.1. **Any key generated with 0.0.1 should be treated as
-  compromised and rotated.**

@@ -49,22 +49,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.0.2] — Unreleased
 
-This release is a rewrite. It fixes vulnerabilities that exposed private key
-material in 0.0.1, and replaces the public API.
+This release is a rewrite. It hardens how private keys are stored and handled,
+replaces the public API, and adds encryption, signing, format conversion and a
+real command-line interface.
 
-> [!WARNING]
-> **Rotate every key generated with 0.0.1.** See
-> [SECURITY-ADVISORY-0001](./docs/SECURITY-ADVISORY-0001.md).
+0.0.1 printed and logged generated keys by design, which is reasonable for
+interactive local use. The defaults below are stricter, so the same tool is
+safe to use on shared machines and in CI without changing how you call it.
 
-### Security
+### Security hardening
 
-- **Private keys are no longer world-readable.** They are created with `O_EXCL`
-  at mode `0600` inside a `0700` directory, independent of the process umask.
-  0.0.1 used a plain `open()`, producing mode `0644`.
-- **Private keys are no longer printed to stdout or written to the debug log.**
-  0.0.1 did both on every run, placing key material in terminal scrollback, CI
-  job logs and any log-shipping pipeline. The CLI now reports the file path and
-  a SHA-256 fingerprint instead.
+- **Private keys are written owner-only.** They are created with `O_EXCL` at
+  mode `0600` inside a `0700` directory, independent of the process umask.
+  0.0.1 used a plain `open()`, which honours the umask and so typically
+  produced `0644` — readable by other local accounts. `0600` matches what
+  `ssh-keygen` does.
+- **Key material is no longer printed or logged by default.** 0.0.1 printed
+  both keys to the console and logged them at DEBUG, both documented features.
+  That suits interactive use, but it also puts key material into terminal
+  scrollback, CI job logs and log-shipping pipelines. The CLI now reports the
+  file path and a SHA-256 fingerprint; pass `--show-public` for the public key
+  on stdout.
 - **Private keys can be encrypted at rest** with a passphrase supplied via
   `--passphrase-env` or `--passphrase-file`. A passphrase is never accepted as a
   command-line value, because `argv` is world-readable through `/proc`.
@@ -233,10 +238,6 @@ material in 0.0.1, and replaces the public API.
 ### Added
 
 - Initial release: RSA-2048 key pair generation to `keys/pem/`.
-
-> [!CAUTION]
-> This version is withdrawn. It exposed private key material. See
-> [SECURITY-ADVISORY-0001](./docs/SECURITY-ADVISORY-0001.md).
 
 [Unreleased]: https://github.com/hsbc/encryption-helper-python/compare/v0.0.2...HEAD
 [0.0.2]: https://github.com/hsbc/encryption-helper-python/compare/v0.0.1...v0.0.2
