@@ -74,9 +74,10 @@ class TestKeygen:
         assert "Fingerprint: SHA256:" in capsys.readouterr().out
 
     def test_never_prints_the_private_key(self, tmp_path, capsys):
-        """Regression test for finding C3.
+        """0.0.1 printed the full PEM private key to stdout on every run.
 
-        Version 0.0.1 printed the full PEM private key to stdout on every run.
+        That was a documented feature. It is no longer the default, because it
+        also puts key material into scrollback and CI logs.
         """
         main(["keygen", "--out-dir", str(tmp_path), "--no-passphrase"])
         captured = capsys.readouterr()
@@ -95,7 +96,7 @@ class TestKeygen:
 
     @posix_only
     def test_private_key_is_owner_only(self, tmp_path):
-        """Regression test for finding C2."""
+        """0.0.1 wrote private keys at the umask default, usually 0644."""
         main(["keygen", "--out-dir", str(tmp_path), "--no-passphrase"])
         assert stat.S_IMODE((tmp_path / "key.pem").stat().st_mode) == 0o600
 
@@ -129,7 +130,7 @@ class TestKeygen:
         assert "invalid choice" in capsys.readouterr().err
 
     def test_existing_key_exits_three(self, tmp_path, capsys):
-        """Regression test for finding C6."""
+        """0.0.1 silently replaced an existing key pair."""
         main(
             [
                 "keygen",

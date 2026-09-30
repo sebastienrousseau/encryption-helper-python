@@ -2,9 +2,9 @@
 # Copyright 2024-2026 HSBC Group Management Services Limited
 """Tests for the secure filesystem layer.
 
-These are the tests that would have caught findings C2 (world-readable private
-keys), C5 (the write path rejecting every valid call) and C6 (silent
-destruction of an existing key).
+These cover the three things 0.0.1 got wrong here: private keys written at
+the umask default rather than owner-only, a write path that rejected every
+valid call, and silent destruction of an existing key.
 """
 
 from __future__ import annotations
@@ -33,13 +33,12 @@ class TestSecureWriteBytes:
         assert target.read_bytes() == b"test data"
 
     def test_accepts_bytes_payloads(self, tmp_path):
-        """Regression test for finding C5.
+        """The old write path rejected every valid call.
 
-        The previous implementation validated its payload with a
-        string-only emptiness check, so every call with the documented
-        ``bytes`` argument raised ``Exception("One or more arguments are
-        empty")``. The old suite could not see it because it mocked the
-        validator out.
+        It validated its payload with a string-only emptiness check, so every
+        call with the documented ``bytes`` argument raised
+        ``Exception("One or more arguments are empty")``. The old suite could
+        not see it, because it mocked the validator out.
         """
         target = tmp_path / "out.bin"
         assert secure_write_bytes(target, b"test data").path == target
@@ -52,7 +51,7 @@ class TestSecureWriteBytes:
 
     @posix_only
     def test_secret_files_are_owner_only(self, tmp_path):
-        """Regression test for finding C2."""
+        """Private keys must not inherit the umask."""
         target = secure_write_bytes(tmp_path / "private.pem", b"secret").path
         assert stat.S_IMODE(target.stat().st_mode) == SECRET_FILE_MODE
 
@@ -79,7 +78,7 @@ class TestSecureWriteBytes:
         assert stat.S_IMODE(target.parent.stat().st_mode) == SECRET_DIR_MODE
 
     def test_refuses_to_overwrite_by_default(self, tmp_path):
-        """Regression test for finding C6."""
+        """An existing file must never be replaced silently."""
         target = tmp_path / "key.pem"
         secure_write_bytes(target, b"original")
         with pytest.raises(KeyExistsError, match="already exists"):

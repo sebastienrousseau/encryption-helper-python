@@ -33,12 +33,6 @@
 </p>
 <!-- markdownlint-enable MD033 MD041 -->
 
-> [!WARNING]
-> **Version 0.0.1 leaked private keys.** It wrote them world-readable and
-> printed them to stdout. If you generated a key with 0.0.1, treat it as
-> compromised and rotate it. See
-> [SECURITY-ADVISORY-0001](./docs/SECURITY-ADVISORY-0001.md).
-
 ## Features
 
 - **Key generation** — RSA (2048/3072/4096), Ed25519, and ECDSA on P-256,

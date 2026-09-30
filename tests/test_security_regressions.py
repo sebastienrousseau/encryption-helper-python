@@ -49,10 +49,8 @@ def _private_key_body(path) -> str:
 
 
 class TestPrivateKeyNeverDisclosed:
-    """Regression tests for finding C3.
-
-    0.0.1 printed the complete PEM private key to stdout and logged it at
-    DEBUG on every single run.
+    """0.0.1 printed the complete PEM private key to stdout and logged it at
+    DEBUG on every run, both documented features. Neither is the default now.
     """
 
     @pytest.mark.parametrize("level", ALL_LOG_LEVELS)

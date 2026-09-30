@@ -41,7 +41,7 @@ class TestWriteKeyPair:
 
     @posix_only
     def test_private_key_is_owner_only(self, tmp_path, ed25519_key):
-        """Regression test for finding C2."""
+        """Private keys must be owner-only, whatever the umask."""
         paths = write_key_pair(ed25519_key, tmp_path)
         assert stat.S_IMODE(paths.private_key_path.stat().st_mode) == SECRET_FILE_MODE
 
@@ -67,7 +67,7 @@ class TestWriteKeyPair:
         )
 
     def test_refuses_to_clobber(self, tmp_path, ed25519_key):
-        """Regression test for finding C6."""
+        """An existing key pair must never be replaced silently."""
         write_key_pair(ed25519_key, tmp_path)
         original = (tmp_path / "key.pem").read_bytes()
         with pytest.raises(KeyExistsError):

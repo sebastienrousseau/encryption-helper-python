@@ -15,6 +15,6 @@ jobs:
       - uses: actions/dependency-review-action@e7aeea1772ec01da74cafda11c5caa463520ca59 # v3
         with:
           fail-on-severity: moderate
-          # This project's LICENSE is unresolved (see IMPLEMENTATION_PLAN C1);
-          # tighten this list once it is settled.
+          # This project is Apache-2.0; copyleft dependencies would be a
+          # licence conflict.
           deny-licenses: AGPL-3.0, GPL-3.0
