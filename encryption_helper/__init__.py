@@ -66,14 +66,20 @@ from .errors import (
     UnsupportedAlgorithmError,
 )
 from .keys import (
+    POST_QUANTUM,
+    QUANTUM_VULNERABLE,
     KeyGenerationResult,
     encode_private_key,
     encode_public_key,
     fingerprint_sha256,
     generate,
     generate_ecdsa,
+    generate_ed448,
     generate_ed25519,
+    generate_mldsa,
+    generate_mlkem,
     generate_rsa,
+    generate_x25519,
     load_private_key,
     load_private_key_file,
     load_public_key,
@@ -92,6 +98,8 @@ except metadata.PackageNotFoundError:  # pragma: no cover - source checkout
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 __all__ = [
+    "POST_QUANTUM",
+    "QUANTUM_VULNERABLE",
     "DecryptionError",
     "EncryptionHelperError",
     "InvalidArgumentError",
@@ -111,8 +119,12 @@ __all__ = [
     "fingerprint_sha256",
     "generate",
     "generate_ecdsa",
+    "generate_ed448",
     "generate_ed25519",
+    "generate_mldsa",
+    "generate_mlkem",
     "generate_rsa",
+    "generate_x25519",
     "is_valid_signature",
     "load_private_key",
     "load_private_key_file",

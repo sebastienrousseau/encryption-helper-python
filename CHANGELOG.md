@@ -9,6 +9,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Post-quantum cryptography.** ML-KEM-768 and ML-KEM-1024 (FIPS 203) for
+  encryption, ML-DSA-44/65/87 (FIPS 204) for signing. NIST IR 8547 deprecates
+  RSA and the elliptic curves from 2030 and disallows them from 2035; every
+  algorithm this package previously offered was on that list. No new
+  dependency was needed -- both are in `cryptography` 46+.
+- **X25519** ephemeral-static encryption, as `age` and HPKE do, and **Ed448**
+  signing.
+- Three new container mechanisms alongside RSA-OAEP: `kem_id` 2 (ML-KEM-768),
+  3 (ML-KEM-1024) and 4 (X25519+HKDF-SHA256). The header already carried a
+  mechanism byte and rejected unknown values, so this is additive --
+  `kem_id` 1 containers still decrypt. The identifier is mixed into the HKDF
+  `info`, so one shared secret cannot derive the same content key under two
+  labels.
+- `encryption-helper capabilities` reporting every algorithm, whether it can
+  encrypt or sign, and its NIST IR 8547 horizon. `--json` gives the same for a
+  cryptographic inventory.
+- A notice at generation time when a quantum-vulnerable algorithm is chosen,
+  naming the dates and the post-quantum alternative. A notice, not a refusal:
+  RSA and the curves remain correct and widely interoperable.
+- `--level` for ML-KEM and ML-DSA parameter sets.
+- `--max-size` on the data commands, defaulting to 64 MiB. Encryption is not
+  streamed and peak memory is roughly four times the payload, so oversized
+  input is refused rather than risking an out-of-memory kill mid-write.
+- CycloneDX SBOM generation in CI and attached to releases. This was listed in
+  the original plan and in a commit message, and had never been implemented.
+- `ARCHITECTURE.md`, `DEVELOPMENT.md`, `ROADMAP.md`, `RELEASING.md`,
+  `GOVERNANCE.md`, `MAINTAINERS.md`, `CITATION.cff`, `Makefile`, `.mise.toml`,
+  `MANIFEST.in` and markdown linting.
+
+### Changed
+
+- README restyled, with a contents index, badge strip and operational
+  sections.
+- Fingerprints for ML-KEM, ML-DSA, X25519 and Ed448 are taken over DER
+  SubjectPublicKeyInfo under a distinct `SHA256-SPKI:` prefix, because those
+  key types have no OpenSSH encoding. RSA, Ed25519 and ECDSA still match
+  `ssh-keygen -lf` byte for byte. The prefixes differ deliberately: digests
+  over different encodings must never look comparable.
+- Error classification is now principled. A key that can never decrypt
+  (Ed25519, Ed448, ECDSA, ML-DSA) raises `InvalidArgumentError` -- a
+  programming mistake. A key that could decrypt but does not match the
+  container raises `DecryptionError`, because that is indistinguishable from a
+  tampered header.
+- `cryptography` is pinned to `>=46.0.0,<51.0.0`. The previous unbounded
+  `>=43.0.0` spanned two years of releases, including ones with known CVEs,
+  and predated ML-KEM.
+- Post-quantum key sizes are reported as "Parameter set", not "Key size":
+  calling ML-KEM-768 "768 bits" would simply be wrong.
+
+### Fixed
+
+- `--json` with `--out -` interleaved a JSON report and binary output on one
+  stream, leaving neither parseable. The report now moves to stderr when
+  stdout carries the command's output. Previously documented as a known issue.
+
+### Deliberately not done
+
+- **Hybrid X25519+ML-KEM.** A composite KEM needs a composite key container,
+  and inventing one without external cryptographic review would be exactly the
+  false confidence this work is meant to avoid. ML-KEM alone is FIPS-approved
+  and satisfies the horizon. Tracked in `ROADMAP.md`.
+- **Streaming encryption.** The chunked-AEAD design is specified in
+  `ROADMAP.md`; frame counters and truncation resistance are where such
+  designs fail, so it needs test vectors and review rather than a quick
+  implementation. `--max-size` is the interim guard.
+
 - `examples/` -- four runnable, CI-executed examples covering key generation
   and storage, hybrid encryption, signing, and loading and format conversion.
 - `benches/bench_crypto.py` -- dependency-free benchmarks for generation,
@@ -41,11 +107,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - README documented `KeyWriteError` and `KeyReadError` in a single combined
   table row, so neither was individually described.
 
-### Known issues
-
-- `--json` combined with `--out -` interleaves the JSON report and binary
-  output on stdout, making the JSON impractical to parse. Use `--out FILE`
-  with `--json`. Tracked for a future release.
 
 ## [0.0.2] — Unreleased
 
@@ -145,7 +206,7 @@ safe to use on shared machines and in CI without changing how you call it.
 - `py.typed`, so downstream consumers receive type information.
 - `KeyPairValidationError` for a pair that fails its pre-write self-check.
 - `NOTICE`, and an SPDX `Apache-2.0` header on every source file.
-- `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `CODEOWNERS`, `SUPPORT.md`, issue
+- `CONTRIBUTING.md`, `CODE-OF-CONDUCT.md`, `CODEOWNERS`, `SUPPORT.md`, issue
   and pull request templates.
 
 ### Changed

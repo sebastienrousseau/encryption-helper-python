@@ -1,0 +1,13 @@
+include LICENSE
+include NOTICE
+include README.md
+include CHANGELOG.md
+include SECURITY.md
+include ARCHITECTURE.md
+include encryption_helper/py.typed
+recursive-exclude tests *
+recursive-exclude benches *
+recursive-exclude fuzz *
+recursive-exclude examples *
+recursive-exclude scripts *
+global-exclude __pycache__ *.py[cod]

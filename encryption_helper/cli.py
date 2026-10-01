@@ -46,6 +46,7 @@ from ._io import (
     secure_write_bytes,
 )
 from .crypto import decrypt, encrypt, sign, verify
+from .crypto.envelope import QUANTUM_VULNERABLE_KEMS, SUPPORTED_KEMS
 from .errors import (
     DecryptionError,
     EncryptionHelperError,
@@ -55,9 +56,15 @@ from .errors import (
 )
 from .keys import (
     ALLOWED_RSA_KEY_SIZES,
+    DEFAULT_MLDSA_LEVEL,
+    DEFAULT_MLKEM_LEVEL,
     DEFAULT_RSA_KEY_SIZE,
+    POST_QUANTUM,
+    QUANTUM_VULNERABLE,
     SUPPORTED_ALGORITHMS,
     SUPPORTED_CURVES,
+    SUPPORTED_MLDSA_LEVELS,
+    SUPPORTED_MLKEM_LEVELS,
     encode_private_key,
     encode_public_key,
     fingerprint_sha256,
@@ -82,6 +89,15 @@ _LOG_LEVELS: Final = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 #: small enough that pointing --passphrase-file at a disk image is an error
 #: rather than an out-of-memory event.
 MAX_PASSPHRASE_FILE_BYTES: Final = 64 * 1024
+
+#: Default ceiling on data passed to encrypt or decrypt.
+#:
+#: Encryption holds the whole message in memory, and peak usage measures at
+#: roughly four times the payload -- plaintext, ciphertext and intermediate
+#: copies are all resident. A 1 GiB file therefore needs about 4 GiB. Rather
+#: than let that become an out-of-memory kill, the CLI refuses and says so.
+#: Raise it with --max-size if you have the headroom.
+DEFAULT_MAX_INPUT_BYTES: Final = 64 * 1024 * 1024
 
 logger = logging.getLogger(__name__)
 
@@ -114,11 +130,14 @@ def _configure_logging(args: argparse.Namespace) -> None:
 def _emit(args: argparse.Namespace, human: str, payload: dict[str, Any]) -> None:
     """Write a result as either human text or JSON.
 
-    JSON goes to stdout so it can be piped; human diagnostics that are not the
-    result itself go to stderr elsewhere.
+    JSON normally goes to stdout so it can be piped. The exception is when
+    stdout is already carrying the command's binary output (``--out -``):
+    interleaving a JSON object with ciphertext leaves neither parseable, so
+    the report moves to stderr and stdout stays pure.
     """
     if args.json:
-        print(json.dumps(payload, indent=2, sort_keys=True))
+        stream = sys.stderr if getattr(args, "output", None) == _STDIO else sys.stdout
+        print(json.dumps(payload, indent=2, sort_keys=True), file=stream)
     elif not args.quiet:
         print(human)
 
@@ -388,11 +407,39 @@ def _fail_usage(message: str) -> NoReturn:
     raise SystemExit(EXIT_USAGE)
 
 
-def _read_input(source: str) -> bytes:
-    """Read from a path, or from stdin when ``source`` is ``-``."""
+def _read_input(source: str, *, max_size: int = DEFAULT_MAX_INPUT_BYTES) -> bytes:
+    """Read from a path, or from stdin when ``source`` is ``-``.
+
+    Enforces a ceiling, because the whole payload is held in memory and peak
+    usage is about four times its size. Refusing is better than being killed
+    by the OOM reaper half way through writing an output file.
+
+    Raises:
+        SystemExit: If the input exceeds ``max_size``.
+    """
     if source == _STDIO:
-        return sys.stdin.buffer.read()
-    return read_bytes(source)
+        # Read one byte past the limit so an oversized stream is detected
+        # without buffering all of it.
+        data = sys.stdin.buffer.read(max_size + 1)
+        if len(data) > max_size:
+            _fail_usage(
+                f"Input exceeds the {max_size}-byte limit. Raise --max-size if "
+                "you have the memory for roughly four times that."
+            )
+        return data
+
+    path = Path(source).expanduser()
+    try:
+        size = path.stat().st_size
+    except OSError:
+        size = 0  # read_bytes() reports the real problem in a moment.
+    if size > max_size:
+        _fail_usage(
+            f"{path} is {size} bytes, which exceeds the {max_size}-byte limit. "
+            "Raise --max-size if you have the memory for roughly four times "
+            "that."
+        )
+    return read_bytes(path)
 
 
 def _write_output(destination: str, data: bytes, *, mode: int, force: bool) -> str:
@@ -414,13 +461,99 @@ def _write_output(destination: str, data: bytes, *, mode: int, force: bool) -> s
 # ---------------------------------------------------------------------------
 
 
+def _capabilities() -> dict[str, Any]:
+    """Describe what this build can do, and what is on a deadline.
+
+    Machine-readable so a cryptographic inventory tool can answer "where is
+    our quantum-vulnerable material?" without parsing help text. NIST IR 8547
+    deprecates the classical algorithms from 2030 and disallows them from
+    2035, so the horizon is reported per algorithm rather than left implicit.
+    """
+    return {
+        "version": __version__,
+        "algorithms": {
+            name: {
+                "quantum_vulnerable": name in QUANTUM_VULNERABLE,
+                "post_quantum": name in POST_QUANTUM,
+                "deprecated_from": 2030 if name in QUANTUM_VULNERABLE else None,
+                "disallowed_from": 2035 if name in QUANTUM_VULNERABLE else None,
+                "can_encrypt": name in {"rsa", "x25519", "mlkem"},
+                "can_sign": name in {"rsa", "ed25519", "ed448", "ecdsa", "mldsa"},
+            }
+            for name in SUPPORTED_ALGORITHMS
+        },
+        "rsa_key_sizes": list(ALLOWED_RSA_KEY_SIZES),
+        "mlkem_levels": sorted(SUPPORTED_MLKEM_LEVELS),
+        "mldsa_levels": sorted(SUPPORTED_MLDSA_LEVELS),
+        "container_kems": sorted(SUPPORTED_KEMS),
+        "quantum_vulnerable_kems": sorted(QUANTUM_VULNERABLE_KEMS),
+        "formats": ["pem", "der", "openssh"],
+        "standards": ["FIPS 203 (ML-KEM)", "FIPS 204 (ML-DSA)", "NIST IR 8547"],
+    }
+
+
+def _cmd_capabilities(args: argparse.Namespace) -> int:
+    """Report supported algorithms and their post-quantum status."""
+    caps = _capabilities()
+    rows = [
+        f"encryption-helper {caps['version']}",
+        "",
+        f"{'algorithm':<10} {'encrypt':>8} {'sign':>5} {'post-quantum':>13}  horizon",
+        "-" * 58,
+    ]
+    for name, info in caps["algorithms"].items():
+        horizon = (
+            f"deprecated {info['deprecated_from']}, disallowed "
+            f"{info['disallowed_from']}"
+            if info["quantum_vulnerable"]
+            else "no deadline"
+        )
+        rows.append(
+            f"{name:<10} {'yes' if info['can_encrypt'] else '-':>8} "
+            f"{'yes' if info['can_sign'] else '-':>5} "
+            f"{'yes' if info['post_quantum'] else 'no':>13}  {horizon}"
+        )
+    rows += [
+        "",
+        "Horizons are from NIST IR 8547. Algorithms with a deadline should not",
+        "be chosen for key material that must outlive it.",
+    ]
+    _emit(args, "\n".join(rows), caps)
+    return EXIT_OK
+
+
+def _warn_if_quantum_vulnerable(args: argparse.Namespace, algorithm: str) -> None:
+    """Note the deprecation horizon when generating a classical key.
+
+    Not a refusal: RSA and the curves remain correct, widely interoperable
+    and the right choice for plenty of short-lived uses. But the dates are
+    published, and a user choosing a default should know them.
+    """
+    if args.quiet or algorithm not in QUANTUM_VULNERABLE:
+        return
+    print(
+        f"note: {algorithm} is broken by a quantum computer. NIST IR 8547 "
+        "deprecates it from\n"
+        "      2030 and disallows it from 2035. For key material that must "
+        "outlive those\n"
+        "      dates use --algorithm mlkem (encryption) or mldsa (signing).",
+        file=sys.stderr,
+    )
+
+
 def _cmd_keygen(args: argparse.Namespace) -> int:
     """Generate a key pair and write it to disk."""
     out_dir = resolve_destination(args.out_dir)
     _warn_if_inside_git_worktree(out_dir)
 
+    _warn_if_quantum_vulnerable(args, args.algorithm)
     passphrase = _new_key_passphrase(args)
-    key = generate(args.algorithm, key_size=args.key_size, curve=args.curve)
+    key = generate(
+        args.algorithm,
+        key_size=args.key_size,
+        curve=args.curve,
+        level=args.level,
+    )
     result = write_key_pair(
         key,
         out_dir,
@@ -437,11 +570,19 @@ def _cmd_keygen(args: argparse.Namespace) -> int:
         "paste it into a chat or ticket."
     )
 
-    size = f"{result.key_size} bits" if result.key_size else "n/a"
+    # ML-KEM and ML-DSA sizes are parameter sets, not bit lengths. Calling
+    # ML-KEM-768 "768 bits" would be simply wrong.
+    if not result.key_size:
+        size_label, size = "Key size", "n/a"
+    elif result.algorithm in POST_QUANTUM:
+        size_label, size = "Parameter set", str(result.key_size)
+    else:
+        size_label, size = "Key size", f"{result.key_size} bits"
+
     human = (
         f"{result.algorithm.upper()} key pair generated successfully.\n"
         f"Algorithm:   {result.algorithm}\n"
-        f"Key size:    {size}\n"
+        f"{size_label + ':':<13} {size}\n"
         f"Private key: {result.private_key_path}\n"
         f"Public key:  {result.public_key_path}\n"
         f"Fingerprint: {result.fingerprint}\n"
@@ -471,6 +612,10 @@ def _cmd_keygen(args: argparse.Namespace) -> int:
             "fingerprint": result.fingerprint,
             "algorithm": result.algorithm,
             "key_size": result.key_size,
+            "parameter_set": (
+                result.key_size if result.algorithm in POST_QUANTUM else None
+            ),
+            "post_quantum": result.algorithm in POST_QUANTUM,
             "encrypted": result.private_key_encrypted,
             "replaced": result.replaced,
         },
@@ -483,7 +628,7 @@ def _cmd_keygen(args: argparse.Namespace) -> int:
 def _cmd_encrypt(args: argparse.Namespace) -> int:
     """Encrypt data to a public key."""
     public_key = load_public_key_file(args.public_key)
-    blob = encrypt(public_key, _read_input(args.input))
+    blob = encrypt(public_key, _read_input(args.input, max_size=args.max_size))
     where = _write_output(args.output, blob, mode=PUBLIC_FILE_MODE, force=args.force)
     _emit(
         args,
@@ -496,7 +641,7 @@ def _cmd_encrypt(args: argparse.Namespace) -> int:
 def _cmd_decrypt(args: argparse.Namespace) -> int:
     """Decrypt a container with a private key."""
     private_key = _load_private_key(args, args.private_key)
-    plaintext = decrypt(private_key, _read_input(args.input))
+    plaintext = decrypt(private_key, _read_input(args.input, max_size=args.max_size))
     where = _write_output(
         args.output, plaintext, mode=SECRET_FILE_MODE, force=args.force
     )
@@ -511,7 +656,7 @@ def _cmd_decrypt(args: argparse.Namespace) -> int:
 def _cmd_sign(args: argparse.Namespace) -> int:
     """Sign data with a private key."""
     private_key = _load_private_key(args, args.private_key)
-    signature = sign(private_key, _read_input(args.input))
+    signature = sign(private_key, _read_input(args.input, max_size=args.max_size))
     where = _write_output(
         args.output, signature, mode=PUBLIC_FILE_MODE, force=args.force
     )
@@ -526,7 +671,11 @@ def _cmd_sign(args: argparse.Namespace) -> int:
 def _cmd_verify(args: argparse.Namespace) -> int:
     """Verify a signature over data."""
     public_key = load_public_key_file(args.public_key)
-    verify(public_key, read_bytes(args.signature), _read_input(args.input))
+    verify(
+        public_key,
+        read_bytes(args.signature),
+        _read_input(args.input, max_size=args.max_size),
+    )
     _emit(args, "Signature is valid.", {"valid": True})
     return EXIT_OK
 
@@ -608,6 +757,17 @@ def _add_passphrase_flags(
 def _add_io_flags(parser: argparse.ArgumentParser, *, output: bool = True) -> None:
     """Add the shared ``--in``/``--out`` flags."""
     parser.add_argument(
+        "--max-size",
+        type=int,
+        default=DEFAULT_MAX_INPUT_BYTES,
+        metavar="BYTES",
+        help=(
+            f"Refuse input larger than this (default: "
+            f"{DEFAULT_MAX_INPUT_BYTES // (1024 * 1024)} MiB). Encryption is "
+            "not streamed, so peak memory is roughly four times the payload."
+        ),
+    )
+    parser.add_argument(
         "--in",
         dest="input",
         default=_STDIO,
@@ -688,7 +848,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--algorithm",
         choices=SUPPORTED_ALGORITHMS,
         default="rsa",
-        help="Key algorithm (default: rsa).",
+        help=(
+            "Key algorithm (default: rsa). Encryption: rsa, x25519, mlkem. "
+            "Signing: rsa, ed25519, ed448, ecdsa, mldsa. Only mlkem and mldsa "
+            "are post-quantum; see `encryption-helper capabilities`."
+        ),
     )
     keygen.add_argument(
         "--key-size",
@@ -701,6 +865,19 @@ def build_parser() -> argparse.ArgumentParser:
             f"{', '.join(str(s) for s in ALLOWED_RSA_KEY_SIZES)} "
             f"(default: {DEFAULT_RSA_KEY_SIZE}). Ignored for non-RSA "
             "algorithms."
+        ),
+    )
+    keygen.add_argument(
+        "--level",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "ML-KEM or ML-DSA parameter set. ML-KEM: "
+            f"{', '.join(str(n) for n in sorted(SUPPORTED_MLKEM_LEVELS))} "
+            f"(default {DEFAULT_MLKEM_LEVEL}). ML-DSA: "
+            f"{', '.join(str(n) for n in sorted(SUPPORTED_MLDSA_LEVELS))} "
+            f"(default {DEFAULT_MLDSA_LEVEL}). Ignored for other algorithms."
         ),
     )
     keygen.add_argument(
@@ -792,6 +969,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     fpr.add_argument("key", metavar="PATH")
     fpr.set_defaults(func=_cmd_fingerprint)
+
+    caps = sub.add_parser(
+        "capabilities",
+        help="Report supported algorithms and their post-quantum status.",
+        description=(
+            "List every algorithm this build supports, whether it can encrypt "
+            "or sign, and whether it is affected by the NIST IR 8547 "
+            "deprecation horizon. Use --json for a cryptographic inventory."
+        ),
+    )
+    caps.set_defaults(func=_cmd_capabilities)
 
     cvt = sub.add_parser(
         "convert",
