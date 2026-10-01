@@ -118,6 +118,23 @@ pyvenv.cfg
 *.db-shm
 *.db-wal
 
-# Preventing keys to be uploaded
-public-key.pem
-private-key.pem
+# ---------------------------------------------------------------------------
+# Key material -- never commit secrets.
+# The `detect-private-key` pre-commit hook is a second line of defence.
+# ---------------------------------------------------------------------------
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.der
+*.asc
+*.gpg
+id_rsa*
+id_ed25519*
+id_ecdsa*
+
+# Explicitly allow non-secret fixtures used by the test suite.
+!tests/fixtures/**/*.pem
+!tests/fixtures/**/*.der
+build/

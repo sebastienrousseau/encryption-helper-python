@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Toolchain pinning for mise. `mise install` gets you the versions CI uses.
+
+[tools]
+python = "3.12"
+poetry = "latest"
+
+[env]
+# Keep caches inside the project so a read-only HOME does not break tooling.
+RUFF_CACHE_DIR = "{{config_root}}/.ruff_cache"
+MYPY_CACHE_DIR = "{{config_root}}/.mypy_cache"
+
+[tasks.check]
+description = "Everything CI runs"
+run = "make check"
+
+[tasks.fuzz]
+description = "Fuzz the parsers"
+run = "make fuzz"
