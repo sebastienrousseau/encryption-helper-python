@@ -114,3 +114,82 @@ class TestGenerateDispatcher:
     def test_propagates_parameter_errors(self):
         with pytest.raises(InvalidArgumentError):
             generate("rsa", key_size=1024)
+
+
+class TestPostQuantumGeneration:
+    """ML-KEM (FIPS 203) and ML-DSA (FIPS 204).
+
+    These are the only algorithms here that survive a quantum computer, and
+    the only ones NIST permits past 2035.
+    """
+
+    @pytest.mark.parametrize("level", [768, 1024])
+    def test_mlkem_levels(self, level):
+        from encryption_helper.keys import generate_mlkem
+
+        assert type(generate_mlkem(level=level)).__name__ == f"MLKEM{level}PrivateKey"
+
+    @pytest.mark.parametrize("level", [44, 65, 87])
+    def test_mldsa_levels(self, level):
+        from encryption_helper.keys import generate_mldsa
+
+        assert type(generate_mldsa(level=level)).__name__ == f"MLDSA{level}PrivateKey"
+
+    @pytest.mark.parametrize("level", [0, 1, 512, 2048])
+    def test_mlkem_rejects_unknown_levels(self, level):
+        from encryption_helper.keys import generate_mlkem
+
+        with pytest.raises(UnsupportedAlgorithmError, match="Unsupported ML-KEM"):
+            generate_mlkem(level=level)
+
+    @pytest.mark.parametrize("level", [0, 1, 43, 88, 128])
+    def test_mldsa_rejects_unknown_levels(self, level):
+        from encryption_helper.keys import generate_mldsa
+
+        with pytest.raises(UnsupportedAlgorithmError, match="Unsupported ML-DSA"):
+            generate_mldsa(level=level)
+
+    def test_defaults_are_the_documented_levels(self):
+        from encryption_helper.keys import (
+            DEFAULT_MLDSA_LEVEL,
+            DEFAULT_MLKEM_LEVEL,
+            generate,
+        )
+
+        assert DEFAULT_MLKEM_LEVEL == 768
+        assert DEFAULT_MLDSA_LEVEL == 65
+        assert type(generate("mlkem")).__name__ == "MLKEM768PrivateKey"
+        assert type(generate("mldsa")).__name__ == "MLDSA65PrivateKey"
+
+    def test_generates_distinct_keys(self):
+        from encryption_helper.keys import encode_public_key, generate_mlkem
+
+        a = encode_public_key(generate_mlkem().public_key(), fmt="der")
+        b = encode_public_key(generate_mlkem().public_key(), fmt="der")
+        assert a != b
+
+
+class TestQuantumVulnerabilityMetadata:
+    """The horizon is a published date, so the package records it rather than
+    leaving users to discover it. NIST IR 8547: deprecated 2030, disallowed
+    2035."""
+
+    def test_classical_algorithms_are_marked_vulnerable(self):
+        from encryption_helper.keys import QUANTUM_VULNERABLE
+
+        assert {"rsa", "ecdsa", "ed25519", "ed448", "x25519"} == set(QUANTUM_VULNERABLE)
+
+    def test_post_quantum_algorithms_are_marked_safe(self):
+        from encryption_helper.keys import POST_QUANTUM
+
+        assert {"mlkem", "mldsa"} == set(POST_QUANTUM)
+
+    def test_the_two_sets_are_disjoint_and_cover_everything(self):
+        from encryption_helper.keys import (
+            POST_QUANTUM,
+            QUANTUM_VULNERABLE,
+            SUPPORTED_ALGORITHMS,
+        )
+
+        assert not (POST_QUANTUM & QUANTUM_VULNERABLE)
+        assert set(SUPPORTED_ALGORITHMS) == POST_QUANTUM | QUANTUM_VULNERABLE

@@ -16,7 +16,14 @@ from __future__ import annotations
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import ec, ed25519, padding, rsa
+from cryptography.hazmat.primitives.asymmetric import (
+    ec,
+    ed448,
+    ed25519,
+    mldsa,
+    padding,
+    rsa,
+)
 from cryptography.hazmat.primitives.asymmetric.types import (
     PrivateKeyTypes,
     PublicKeyTypes,
@@ -25,6 +32,18 @@ from cryptography.hazmat.primitives.asymmetric.types import (
 from ..errors import SignatureVerificationError, UnsupportedAlgorithmError
 
 __all__ = ["is_valid_signature", "sign", "verify"]
+
+#: Every ML-DSA parameter set, as a tuple suitable for `isinstance`.
+_MLDSA_PRIVATE = (
+    mldsa.MLDSA44PrivateKey,
+    mldsa.MLDSA65PrivateKey,
+    mldsa.MLDSA87PrivateKey,
+)
+_MLDSA_PUBLIC = (
+    mldsa.MLDSA44PublicKey,
+    mldsa.MLDSA65PublicKey,
+    mldsa.MLDSA87PublicKey,
+)
 
 _PSS_PADDING = padding.PSS(
     mgf=padding.MGF1(hashes.SHA256()),
@@ -42,8 +61,14 @@ def sign(private_key: PrivateKeyTypes, data: bytes) -> bytes:
     ==================  ==========================================
     RSA                 RSA-PSS, SHA-256, salt length = digest
     Ed25519             Ed25519 (PureEdDSA)
+    Ed448               Ed448 (PureEdDSA)
     ECDSA               ECDSA with SHA-256
+    ML-DSA 44/65/87     ML-DSA (FIPS 204), hedged
     ==================  ==========================================
+
+    ML-DSA is the only one of these believed secure against a quantum
+    computer. The others are deprecated from 2030 and disallowed from 2035
+    under NIST IR 8547.
 
     Args:
         private_key: Key to sign with.
@@ -63,14 +88,17 @@ def sign(private_key: PrivateKeyTypes, data: bytes) -> bytes:
     """
     if isinstance(private_key, rsa.RSAPrivateKey):
         return private_key.sign(data, _PSS_PADDING, hashes.SHA256())
-    if isinstance(private_key, ed25519.Ed25519PrivateKey):
+    if isinstance(private_key, ed25519.Ed25519PrivateKey | ed448.Ed448PrivateKey):
         return private_key.sign(data)
     if isinstance(private_key, ec.EllipticCurvePrivateKey):
         return private_key.sign(data, ec.ECDSA(hashes.SHA256()))
+    if isinstance(private_key, _MLDSA_PRIVATE):
+        return private_key.sign(data)
 
     msg = (
         f"Cannot sign with a {type(private_key).__name__}. Supported key types "
-        "are RSA, Ed25519 and ECDSA."
+        "are RSA, Ed25519, Ed448, ECDSA and ML-DSA. X25519 and ML-KEM keys are "
+        "for encryption, not signing."
     )
     raise UnsupportedAlgorithmError(msg)
 
@@ -101,11 +129,14 @@ def verify(public_key: PublicKeyTypes, signature: bytes, data: bytes) -> None:
         if isinstance(public_key, rsa.RSAPublicKey):
             public_key.verify(signature, data, _PSS_PADDING, hashes.SHA256())
             return
-        if isinstance(public_key, ed25519.Ed25519PublicKey):
+        if isinstance(public_key, ed25519.Ed25519PublicKey | ed448.Ed448PublicKey):
             public_key.verify(signature, data)
             return
         if isinstance(public_key, ec.EllipticCurvePublicKey):
             public_key.verify(signature, data, ec.ECDSA(hashes.SHA256()))
+            return
+        if isinstance(public_key, _MLDSA_PUBLIC):
+            public_key.verify(signature, data)
             return
     except InvalidSignature as exc:
         msg = (
@@ -116,7 +147,7 @@ def verify(public_key: PublicKeyTypes, signature: bytes, data: bytes) -> None:
 
     msg = (
         f"Cannot verify with a {type(public_key).__name__}. Supported key "
-        "types are RSA, Ed25519 and ECDSA."
+        "types are RSA, Ed25519, Ed448, ECDSA and ML-DSA."
     )
     raise UnsupportedAlgorithmError(msg)
 

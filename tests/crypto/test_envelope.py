@@ -10,6 +10,7 @@ it is the one a naive implementation silently fails.
 from __future__ import annotations
 
 import pytest
+from encryption_helper.crypto import envelope
 from encryption_helper.crypto.envelope import (
     _HEADER_SIZE,
     MAGIC,
@@ -136,14 +137,44 @@ class TestTampering:
 
 
 class TestKeyTypeValidation:
-    def test_encrypt_rejects_non_rsa_keys(self, ed25519_key):
-        with pytest.raises(InvalidArgumentError, match="requires an RSA public key"):
-            encrypt(ed25519_key.public_key(), b"data")
+    @pytest.mark.parametrize(
+        "fixture", ["ed25519_key", "ed448_key", "ecdsa_key", "mldsa_key"]
+    )
+    def test_encrypt_rejects_signing_keys(self, request, fixture):
+        """Signature keys cannot carry a content key; say so clearly."""
+        key = request.getfixturevalue(fixture)
+        with pytest.raises(InvalidArgumentError, match="Cannot encrypt to a"):
+            encrypt(key.public_key(), b"data")
 
-    def test_decrypt_rejects_non_rsa_keys(self, rsa_key, ed25519_key):
+    @pytest.mark.parametrize(
+        ("encrypt_fixture", "wrong_fixture"),
+        [
+            ("rsa_key", "mlkem_key"),
+            ("mlkem_key", "rsa_key"),
+            ("x25519_key", "mlkem_key"),
+            ("rsa_key", "x25519_key"),
+        ],
+    )
+    def test_decrypt_rejects_a_key_of_the_wrong_type(
+        self, request, encrypt_fixture, wrong_fixture
+    ):
+        """The container names the mechanism, so a mismatch is detectable."""
+        recipient = request.getfixturevalue(encrypt_fixture)
+        wrong = request.getfixturevalue(wrong_fixture)
+        blob = encrypt(recipient.public_key(), b"data")
+        # A decryption-capable key of the wrong kind is a data problem: it is
+        # indistinguishable from a tampered header.
+        with pytest.raises(DecryptionError, match="needs an"):
+            decrypt(wrong, blob)
+
+    @pytest.mark.parametrize(
+        "fixture", ["ed25519_key", "ed448_key", "ecdsa_key", "mldsa_key"]
+    )
+    def test_decrypt_rejects_a_signing_key(self, request, rsa_key, fixture):
+        """A key that can never decrypt is a programming error, not bad data."""
         blob = encrypt(rsa_key.public_key(), b"data")
-        with pytest.raises(InvalidArgumentError, match="requires an RSA private key"):
-            decrypt(ed25519_key, blob)
+        with pytest.raises(InvalidArgumentError, match="Cannot decrypt with a"):
+            decrypt(request.getfixturevalue(fixture), blob)
 
 
 class TestProperties:
@@ -204,3 +235,157 @@ class TestInternalFailureBranches:
 
         with pytest.raises(DecryptionError, match="wrong length"):
             decrypt(ShortKeyUnwrapper(), blob)
+
+
+# ---------------------------------------------------------------------------
+# Post-quantum and curve25519 mechanisms
+# ---------------------------------------------------------------------------
+
+
+class TestKeyEncapsulationMechanisms:
+    """Every mechanism must round-trip and be self-identifying.
+
+    NIST IR 8547 deprecates RSA and the elliptic curves from 2030 and
+    disallows them from 2035, so ML-KEM is not optional for keys with a long
+    service life. The container records which mechanism produced it, so a
+    recipient never has to guess and an old ciphertext stays readable.
+    """
+
+    @pytest.mark.parametrize(
+        ("fixture", "expected_kem"),
+        [
+            ("rsa_key", envelope.KEM_RSA_OAEP_SHA256),
+            ("mlkem_key", envelope.KEM_MLKEM768),
+            ("x25519_key", envelope.KEM_X25519_HKDF),
+        ],
+    )
+    def test_container_records_its_mechanism(self, request, fixture, expected_kem):
+        key = request.getfixturevalue(fixture)
+        blob = encrypt(key.public_key(), b"payload")
+        assert blob[:4] == MAGIC
+        assert blob[5] == expected_kem
+
+    @pytest.mark.parametrize(
+        "fixture", ["rsa_key", "mlkem_key", "mlkem1024_key", "x25519_key"]
+    )
+    @pytest.mark.parametrize("plaintext", [b"", b"a", b"x" * 100_000])
+    def test_round_trip(self, request, fixture, plaintext):
+        key = request.getfixturevalue(fixture)
+        assert decrypt(key, encrypt(key.public_key(), plaintext)) == plaintext
+
+    @pytest.mark.parametrize("fixture", ["mlkem_key", "mlkem1024_key", "x25519_key"])
+    def test_encryption_is_randomised(self, request, fixture):
+        """Two encapsulations of the same message must differ."""
+        public = request.getfixturevalue(fixture).public_key()
+        assert encrypt(public, b"same") != encrypt(public, b"same")
+
+    @pytest.mark.parametrize("fixture", ["mlkem_key", "mlkem1024_key", "x25519_key"])
+    def test_wrong_key_of_the_right_type_is_rejected(self, request, fixture):
+        """ML-KEM uses implicit rejection, so the AEAD tag is what catches it."""
+        from encryption_helper.keys import generate_mlkem, generate_x25519
+
+        key = request.getfixturevalue(fixture)
+        blob = encrypt(key.public_key(), b"payload")
+        other = (
+            generate_x25519()
+            if fixture == "x25519_key"
+            else generate_mlkem(level=1024 if "1024" in fixture else 768)
+        )
+        with pytest.raises(DecryptionError):
+            decrypt(other, blob)
+
+    @pytest.mark.parametrize("fixture", ["mlkem_key", "x25519_key"])
+    def test_tampering_is_detected(self, request, fixture):
+        key = request.getfixturevalue(fixture)
+        blob = bytearray(encrypt(key.public_key(), b"payload"))
+        blob[-1] ^= 0x01
+        with pytest.raises(DecryptionError, match="integrity check"):
+            decrypt(key, bytes(blob))
+
+    def test_mechanism_is_bound_into_the_derived_key(self, mlkem_key):
+        """Relabelling a container's mechanism must not decrypt.
+
+        The KEM identifier is mixed into the HKDF info, so the same shared
+        secret under a different label derives a different content key.
+        """
+        blob = bytearray(encrypt(mlkem_key.public_key(), b"payload"))
+        blob[5] = envelope.KEM_MLKEM1024
+        with pytest.raises(DecryptionError):
+            decrypt(mlkem_key, bytes(blob))
+
+    def test_unknown_mechanism_is_rejected_clearly(self, rsa_key):
+        blob = bytearray(encrypt(rsa_key.public_key(), b"payload"))
+        blob[5] = 99
+        with pytest.raises(DecryptionError, match="Unsupported key encapsulation"):
+            decrypt(rsa_key, bytes(blob))
+
+    def test_supported_set_matches_the_implemented_branches(self):
+        assert {
+            envelope.KEM_RSA_OAEP_SHA256,
+            envelope.KEM_MLKEM768,
+            envelope.KEM_MLKEM1024,
+            envelope.KEM_X25519_HKDF,
+        } == envelope.SUPPORTED_KEMS
+
+    def test_quantum_vulnerable_set_is_accurate(self):
+        """RSA and X25519 are broken by a quantum computer; ML-KEM is not."""
+        assert envelope.KEM_RSA_OAEP_SHA256 in envelope.QUANTUM_VULNERABLE_KEMS
+        assert envelope.KEM_X25519_HKDF in envelope.QUANTUM_VULNERABLE_KEMS
+        assert envelope.KEM_MLKEM768 not in envelope.QUANTUM_VULNERABLE_KEMS
+        assert envelope.KEM_MLKEM1024 not in envelope.QUANTUM_VULNERABLE_KEMS
+
+    def test_x25519_encapsulation_is_an_ephemeral_public_key(self, x25519_key):
+        """32 bytes of ephemeral public key, not a wrapped content key."""
+        blob = encrypt(x25519_key.public_key(), b"payload")
+        wrapped_len = int.from_bytes(blob[8:10], "big")
+        assert wrapped_len == 32
+
+    def test_corrupt_x25519_encapsulation_fails_closed(self, x25519_key):
+        blob = bytearray(encrypt(x25519_key.public_key(), b"payload"))
+        for index in range(10, 42):
+            blob[index] ^= 0xFF
+        with pytest.raises(DecryptionError):
+            decrypt(x25519_key, bytes(blob))
+
+    def test_corrupt_mlkem_ciphertext_fails_closed(self, mlkem_key):
+        blob = bytearray(encrypt(mlkem_key.public_key(), b"payload"))
+        blob[200] ^= 0xFF
+        with pytest.raises(DecryptionError):
+            decrypt(mlkem_key, bytes(blob))
+
+
+class TestMalformedEncapsulation:
+    """A header can declare an encapsulation length that does not suit its
+    mechanism. That must fail closed, with the same opaque error as any other
+    key-recovery failure, rather than surfacing a backend ValueError."""
+
+    @staticmethod
+    def _relabel_length(blob: bytes, new_length: int) -> bytes:
+        """Rewrite the container's encapsulation-length field."""
+        mutated = bytearray(blob)
+        mutated[8:10] = new_length.to_bytes(2, "big")
+        return bytes(mutated)
+
+    def test_short_mlkem_ciphertext(self, mlkem_key):
+        blob = encrypt(mlkem_key.public_key(), b"payload")
+        # ML-KEM-768 ciphertexts are 1088 bytes; 100 is structurally wrong.
+        with pytest.raises(DecryptionError, match="Could not recover"):
+            decrypt(mlkem_key, self._relabel_length(blob, 100))
+
+    def test_short_x25519_public_key(self, x25519_key):
+        blob = encrypt(x25519_key.public_key(), b"payload")
+        # X25519 public keys are exactly 32 bytes.
+        with pytest.raises(DecryptionError, match="Could not recover"):
+            decrypt(x25519_key, self._relabel_length(blob, 16))
+
+    def test_short_rsa_wrapped_key(self, rsa_key):
+        blob = encrypt(rsa_key.public_key(), b"payload")
+        with pytest.raises(DecryptionError, match="Could not recover"):
+            decrypt(rsa_key, self._relabel_length(blob, 32))
+
+    @pytest.mark.parametrize("fixture", ["rsa_key", "mlkem_key", "x25519_key"])
+    def test_zero_length_encapsulation(self, request, fixture):
+        key = request.getfixturevalue(fixture)
+        blob = encrypt(key.public_key(), b"payload")
+        with pytest.raises(DecryptionError):
+            decrypt(key, self._relabel_length(blob, 0))

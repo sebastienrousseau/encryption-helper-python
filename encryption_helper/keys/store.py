@@ -29,7 +29,15 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
+from cryptography.hazmat.primitives.asymmetric import (
+    ec,
+    ed448,
+    ed25519,
+    mldsa,
+    mlkem,
+    rsa,
+    x25519,
+)
 from cryptography.hazmat.primitives.asymmetric.types import PrivateKeyTypes
 
 from .._io import (
@@ -86,22 +94,46 @@ class KeyGenerationResult:
     replaced: bool = False
 
 
+#: Key class -> (algorithm name, size). "Size" is a modulus for RSA, a curve
+#: size for ECDSA, and a parameter set for the post-quantum algorithms, which
+#: is what identifies the variant and what callers display.
+_KEY_DESCRIPTIONS: tuple[tuple[type, str, int | None], ...] = (
+    (ed25519.Ed25519PrivateKey, "ed25519", 256),
+    (ed448.Ed448PrivateKey, "ed448", 448),
+    (x25519.X25519PrivateKey, "x25519", 256),
+    (mlkem.MLKEM768PrivateKey, "mlkem", 768),
+    (mlkem.MLKEM1024PrivateKey, "mlkem", 1024),
+    (mldsa.MLDSA44PrivateKey, "mldsa", 44),
+    (mldsa.MLDSA65PrivateKey, "mldsa", 65),
+    (mldsa.MLDSA87PrivateKey, "mldsa", 87),
+)
+
+
 def describe_key(key: PrivateKeyTypes) -> tuple[str, int | None]:
-    """Return the algorithm name and size in bits for a private key.
+    """Return the algorithm name and size for a private key.
 
     Args:
         key: Key to describe.
 
     Returns:
-        A ``(algorithm, key_size)`` pair. ``key_size`` is :data:`None` for
-        algorithms where the concept does not apply.
+        An ``(algorithm, size)`` pair. ``size`` is the RSA modulus, the ECDSA
+        curve size, or the post-quantum parameter set, and is :data:`None` for
+        a key type this package does not recognise.
+
+    Example:
+        >>> from encryption_helper.keys.generate import generate_mldsa
+        >>> describe_key(generate_mldsa(level=65))
+        ('mldsa', 65)
     """
+    # RSA and ECDSA carry their size on the instance, so they are asked
+    # directly rather than listed in the table.
     if isinstance(key, rsa.RSAPrivateKey):
         return "rsa", key.key_size
-    if isinstance(key, ed25519.Ed25519PrivateKey):
-        return "ed25519", 256
     if isinstance(key, ec.EllipticCurvePrivateKey):
         return "ecdsa", key.curve.key_size
+    for cls, name, size in _KEY_DESCRIPTIONS:
+        if isinstance(key, cls):
+            return name, size
     return type(key).__name__.lower(), None
 
 
