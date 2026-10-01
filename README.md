@@ -227,6 +227,19 @@ mechanism is added:
 | 3 | ML-KEM-1024 | ✅ |
 | 4 | X25519 + HKDF-SHA256 | ❌ |
 
+Two AEAD modes share those mechanisms:
+
+| `aead_id` | Mode | Memory |
+| :-------: | ---- | ------ |
+| 1 | AES-256-GCM, one shot | proportional to payload |
+| 2 | AES-256-GCM, segmented | bounded by segment size |
+
+The CLI streams and reads either; the library's `encrypt()`/`decrypt()` are
+one-shot, and `encrypt_stream()`/`decrypt_stream()` are segmented. Segment
+framing is **Tink's STREAM**: a 12-byte nonce of 7-byte random prefix,
+4-byte segment counter and 1-byte final flag, which together defend against
+nonce reuse, reordering, segment dropping and truncation.
+
 > [!NOTE]
 > Hybrid X25519+ML-KEM is **deliberately not implemented**. A composite KEM
 > needs a composite key container, and inventing one without external
@@ -263,7 +276,8 @@ world-readable.
 | `-q`, `--quiet` | Suppress non-error output |
 | `--log-level LEVEL` | Explicit level, overriding `-v`/`-q` |
 | `--json` | Machine-readable output |
-| `--max-size BYTES` | Refuse input above this (default 64 MiB) |
+| `--segment-size BYTES` | Plaintext bytes per encrypted segment (default 256 KiB) |
+| `--max-size BYTES` | Refuse *buffered* input above this (default 64 MiB). File streaming is unbounded |
 
 | Code | Meaning |
 | ---- | ------- |
@@ -399,34 +413,62 @@ public issue.
 
 ## Performance
 
-Measured on one machine; indicative, not a guarantee.
+Measured on one machine (24 cores, AES-NI); indicative, not a guarantee.
+
+### File encryption, 5 MB to 5 GB
+
+Encryption is **segmented**, so memory is bounded by the segment size rather
+than the payload.
+
+| Size | Encrypt | Decrypt | Throughput | Peak RSS |
+| ---- | ------- | ------- | ---------- | -------- |
+| 5 MB | 0.06 s | 0.07 s | 83 MB/s | 30 MB |
+| 50 MB | 0.09 s | 0.09 s | 556 MB/s | 30 MB |
+| 250 MB | 0.24 s | 0.19 s | ~1.2 GB/s | 29 MB |
+| 1 GB | 0.69 s | 0.59 s | ~1.6 GB/s | 29 MB |
+| 2 GB | 1.33 s | 1.19 s | ~1.6 GB/s | 30 MB |
+| 5 GB | 3.63 s | 3.14 s | ~1.5 GB/s | **30 MB** |
+
+**Memory is flat.** A 5 GB file uses the same ~30 MB as a 5 MB one. The small
+sizes look slow in MB/s only because ~60 ms of that is Python interpreter
+startup, which is fixed cost rather than throughput.
+
+### Under concurrent load
+
+16 parallel 50 MB encryptions, wall clock:
+
+| Concurrency | Wall | Aggregate |
+| ----------- | ---- | --------- |
+| 1 | 0.29 s | 172 MB/s |
+| 4 | 0.24 s | 833 MB/s |
+| 8 | 0.20 s | ~2.0 GB/s |
+| 16 | 0.39 s | ~2.1 GB/s |
+
+### Primitives
 
 | Operation | Cost |
 | --------- | ---- |
 | ML-KEM-768 keygen | ~0.05 ms |
-| ML-KEM-1024 keygen | ~0.08 ms |
 | ML-DSA-65 keygen | ~0.13 ms |
 | X25519 / Ed25519 keygen | ~0.02 ms |
-| RSA-2048 keygen | ~17 ms (prime search; high variance) |
-| RSA-3072 keygen | ~87 ms |
-| ML-KEM encrypt / decrypt (64 KiB) | ~0.04 ms / ~0.09 ms |
+| RSA-2048 / RSA-3072 keygen | ~17 ms / ~87 ms |
 | ML-DSA-65 sign / verify | ~0.5 ms / ~0.8 ms |
 | Ed25519 sign | ~0.11 ms |
-| Encrypt / decrypt throughput | ~3 GB/s, AES-NI bound |
 | RSA private key **load** | ~22 ms — the library validates the primes |
+| CLI process startup | ~60 ms |
 
 **Post-quantum is not the slow option.** ML-KEM generates a key pair roughly
 1,700× faster than RSA-3072, and encapsulation is cheaper than RSA-OAEP. The
-real cost is size: ML-KEM ciphertexts carry 1,088 bytes of encapsulation
-against RSA's 256, and an ML-DSA-65 signature is 3,309 bytes against
-Ed25519's 64.
+cost is size: ML-KEM ciphertexts carry 1,088 bytes of encapsulation against
+RSA's 256, and an ML-DSA-65 signature is 3,309 bytes against Ed25519's 64.
 
-> [!CAUTION]
-> Encryption is **not streamed**. Peak memory is roughly **four times** the
-> payload: a 128 MiB input needs ~512 MB. The CLI therefore refuses input
-> above `--max-size` (default 64 MiB) rather than being killed mid-write.
-> Suitable for keys, credentials, configuration and documents; not for
-> multi-gigabyte files.
+> [!NOTE]
+> **What "fast" can mean here.** Raw AES-GCM on this machine peaks at
+> ~4.1 GiB/s, so a 5 GB pass costs **at least 1.2 s** before any file I/O.
+> Sub-second operation is achievable up to roughly 1–2 GB; beyond that you are
+> bounded by hardware, not by this code. Operations are CPU-bound and
+> independent, so throughput scales with cores — run them in parallel rather
+> than expecting one to go faster.
 
 Run them yourself: `python benches/bench_crypto.py --quick`
 

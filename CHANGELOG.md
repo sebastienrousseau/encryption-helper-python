@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Segmented (streaming) encryption**, `aead_id` 2. Encryption previously
+  held the whole payload in memory at roughly four times its size, so a 5 GB
+  file was impossible and the CLI refused anything over 64 MiB. Memory is now
+  bounded by the segment size: measured flat at ~30 MB from 5 MB to 5 GB,
+  sustaining ~1.5 GB/s.
+
+  The framing is **Tink's STREAM**, not a new construction: a 12-byte nonce
+  of 7-byte random prefix, 4-byte segment counter and 1-byte final flag.
+  Together these prevent nonce reuse, reordering, segment dropping and
+  truncation. Truncation resistance is the property naive chunked AEADs lose,
+  and it is tested explicitly along with reordering, duplication and
+  single-byte tampering.
+
+  `encrypt_stream()` and `decrypt_stream()` are the library API. The CLI
+  streams by default and reads either mode, dispatching on the header, so a
+  one-shot container produced by `encrypt()` still decrypts.
+- `--segment-size` to tune the segment, bounded to 4 KiB..64 MiB.
+- The CLI commits streamed output atomically: it writes to a temporary file in
+  the destination directory and renames on success, so a failed decryption
+  never leaves a partial plaintext.
+
 - **Post-quantum cryptography.** ML-KEM-768 and ML-KEM-1024 (FIPS 203) for
   encryption, ML-DSA-44/65/87 (FIPS 204) for signing. NIST IR 8547 deprecates
   RSA and the elliptic curves from 2030 and disallows them from 2035; every
@@ -40,6 +61,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `__version__` is resolved lazily on first access. `importlib.metadata` costs
+  ~9.5 ms per process to import and was paid by every caller whether or not
+  they asked for the version.
+- `--max-size` now applies only where input must be buffered -- reading a
+  one-shot container, or from a pipe. File streaming is unbounded.
 - README restyled, with a contents index, badge strip and operational
   sections.
 - Fingerprints for ML-KEM, ML-DSA, X25519 and Ed448 are taken over DER
