@@ -748,7 +748,9 @@ class TestPassphrasePrompting:
         )
         (tmp_path / "m.txt").write_bytes(b"data")
         monkeypatch.delenv("EH_PASS")
-        monkeypatch.setattr("encryption_helper.cli._interactive", lambda: True)
+        monkeypatch.setattr(
+            "encryption_helper.cli._passphrase._interactive", lambda: True
+        )
         monkeypatch.setattr("getpass.getpass", lambda _prompt: "s3cret")
 
         assert (
@@ -784,7 +786,9 @@ class TestPassphrasePrompting:
         )
         (tmp_path / "m.txt").write_bytes(b"data")
         monkeypatch.delenv("EH_PASS")
-        monkeypatch.setattr("encryption_helper.cli._interactive", lambda: False)
+        monkeypatch.setattr(
+            "encryption_helper.cli._passphrase._interactive", lambda: False
+        )
 
         code = main(
             [
@@ -811,7 +815,7 @@ class TestUnexpectedErrors:
         def boom(*_args, **_kwargs):
             raise RuntimeError(secret_detail)
 
-        monkeypatch.setattr("encryption_helper.cli.generate", boom)
+        monkeypatch.setattr("encryption_helper.cli._commands.generate", boom)
         code = main(keygen_argv(tmp_path))
         captured = capsys.readouterr()
 
@@ -1005,7 +1009,7 @@ class TestExplicitPassphraseWhenLoading:
 class TestWindowsPermissionGuard:
     def test_permission_warning_is_skipped_on_windows(self, tmp_path, monkeypatch):
         """Unix mode bits do not describe an NTFS ACL; do not pretend."""
-        import encryption_helper.cli as cli_module
+        from encryption_helper.cli import _passphrase as cli_module
 
         secret_file = tmp_path / "pass.txt"
         secret_file.write_bytes(b"secret")

@@ -12,13 +12,9 @@ from __future__ import annotations
 import io
 
 import pytest
-from encryption_helper.cli import (
-    EXIT_OK,
-    _format_bytes,
-    _format_duration,
-    _ProgressReporter,
-    main,
-)
+from encryption_helper.cli import EXIT_OK, main
+from encryption_helper.cli._format import _format_bytes, _format_duration
+from encryption_helper.cli._progress import _ProgressReporter
 
 from ._support import posix_only
 

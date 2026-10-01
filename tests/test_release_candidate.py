@@ -577,7 +577,9 @@ class TestPassphraseFileBounds:
             msg = "the oversized file must be rejected before it is read"
             raise AssertionError(msg)
 
-        monkeypatch.setattr("encryption_helper.cli.read_bytes", must_not_read)
+        monkeypatch.setattr(
+            "encryption_helper.cli._passphrase.read_bytes", must_not_read
+        )
         with pytest.raises(SystemExit) as excinfo:
             main(
                 [
@@ -669,10 +671,11 @@ class TestNamespaceHygiene:
     def test_namespace_stays_clean_after_a_full_run(self, tmp_path, monkeypatch):
         """Capture the namespace as the command actually saw it."""
         import encryption_helper.cli as cli_module
+        from encryption_helper.cli import _commands
 
         monkeypatch.setenv("EH_RC", self.SECRET)
         seen = {}
-        real = cli_module._cmd_keygen
+        real = _commands._cmd_keygen
 
         def capture(args):
             result = real(args)
@@ -680,7 +683,7 @@ class TestNamespaceHygiene:
             seen["vars"] = str(vars(args))
             return result
 
-        monkeypatch.setattr(cli_module, "_cmd_keygen", capture)
+        monkeypatch.setattr(_commands, "_cmd_keygen", capture)
         # set_defaults captured the original function, so re-parse via main().
         parser = cli_module.build_parser()
         parsed = parser.parse_args(keygen_rc(tmp_path, "--passphrase-env", "EH_RC"))
@@ -691,13 +694,14 @@ class TestNamespaceHygiene:
 
     def test_prompted_secret_does_not_reach_the_namespace(self, tmp_path, monkeypatch):
         import encryption_helper.cli as cli_module
+        from encryption_helper.cli import _commands, _passphrase
 
-        monkeypatch.setattr(cli_module, "_interactive", lambda: True)
+        monkeypatch.setattr(_passphrase, "_interactive", lambda: True)
         monkeypatch.setattr("getpass.getpass", lambda _prompt: self.SECRET)
 
         parser = cli_module.build_parser()
         args = parser.parse_args(["keygen", "--out-dir", str(tmp_path)])
-        cli_module._cmd_keygen(args)
+        _commands._cmd_keygen(args)
 
         assert self.SECRET not in repr(args)
         assert self.SECRET not in str(vars(args))

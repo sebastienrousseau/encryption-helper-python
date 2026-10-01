@@ -443,7 +443,7 @@ class TestEdgeCases:
 
     def test_key_without_a_reportable_size(self, tmp_path, capsys, monkeypatch):
         """describe_key returns None for an unrecognised type; don't crash."""
-        import encryption_helper.cli as cli_module
+        from encryption_helper.cli import _commands as cli_module
         from encryption_helper.keys.store import KeyGenerationResult
 
         real = cli_module.write_key_pair
@@ -729,14 +729,14 @@ class TestBufferedPathEdges:
 
     def test_unreadable_container_is_not_treated_as_streaming(self, tmp_path):
         """A peek that fails must not claim the container is streaming."""
-        import encryption_helper.cli as cli_module
+        from encryption_helper.cli import _streams as cli_module
 
         assert cli_module._is_streaming_container(str(tmp_path / "absent")) is False
         assert cli_module._is_streaming_container("-") is False
 
     def test_streamed_output_skips_fchmod_on_windows(self, tmp_path, monkeypatch):
         """NTFS uses ACLs; os.fchmod cannot express them, so it is skipped."""
-        import encryption_helper.cli as cli_module
+        from encryption_helper.cli import _streams as cli_module
 
         keys = tmp_path / "k"
         main(keygen(keys, "--algorithm", "x25519"))

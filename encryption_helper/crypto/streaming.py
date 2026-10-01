@@ -71,7 +71,7 @@ from .envelope import (
 #: Called with the cumulative plaintext byte count after each segment.
 #:
 #: The library never prints. A caller that wants progress supplies a callback
-#: and owns the presentation, which keeps `cli.py` the only module that writes
+#: and owns the presentation, which keeps `cli/` the only layer that writes
 #: to a terminal.
 ProgressCallback = Callable[[int], None]
 

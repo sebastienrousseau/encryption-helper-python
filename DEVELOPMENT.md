@@ -42,7 +42,7 @@ make verify     # full release-candidate gate in a clean environment
 
 ```text
 encryption_helper/     the package
-  cli.py               the only module that prints or configures logging
+  cli/                 the only layer that prints or configures logging
   errors.py            the exception hierarchy
   _io.py               permissions, atomicity, rollback
   keys/                generate, serialize, load, store, fingerprint

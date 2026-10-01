@@ -157,7 +157,9 @@ class TestModuleEntryPoint:
             "argv",
             ["encryption-helper", "keygen", "--out-dir", str(tmp_path)],
         )
-        monkeypatch.setattr("encryption_helper.cli._interactive", lambda: False)
+        monkeypatch.setattr(
+            "encryption_helper.cli._passphrase._interactive", lambda: False
+        )
         with pytest.raises(SystemExit) as excinfo:
             runpy.run_module("encryption_helper", run_name="__main__")
 

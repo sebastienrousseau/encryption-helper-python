@@ -187,12 +187,11 @@ convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
 # The CLI is the one place presentation belongs, so printing is expected.
-"encryption_helper/cli.py" = ["T201"]
+"encryption_helper/cli/*" = ["T201"]
 # Examples, benchmarks and fuzz harnesses are standalone scripts. Printing is
 # their entire output mechanism, and they are executed rather than imported.
 "examples/**" = ["T201", "INP001", "S101", "PLR2004"]
 "benches/**" = ["T201", "INP001"]
-# Release-audit tooling: standalone scripts whose output is their purpose.
 # Release-audit and mutation tooling. The mutation table embeds exact
 # source snippets, which cannot be wrapped without breaking the match.
 "scripts/**" = ["T201", "INP001", "TRY300", "E501", "PLR0911"]

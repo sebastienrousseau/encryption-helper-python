@@ -67,8 +67,8 @@ API.
 - **Error messages must never contain key material, passphrases or plaintext.**
   Assume every message reaches a log aggregator.
 - Log lazily — `logger.info("read %s", path)`, not an f-string. The library
-  configures no handlers; only `cli.py` may call `basicConfig`, and only
-  `cli.py` may `print`.
+  configures no handlers; only the `cli` package may call `basicConfig`,
+  and only the `cli` package may `print`.
 - Anything that writes secret material goes through
   `encryption_helper._io.secure_write_bytes`, so the permission and overwrite
   rules stay in one place.

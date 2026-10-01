@@ -213,7 +213,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         id="cli-plaintext-consent",
         property="an unencrypted private key requires explicit consent",
-        path="encryption_helper/cli.py",
+        path="encryption_helper/cli/_passphrase.py",
         old="    if args.no_passphrase:\n        return None",
         new="    if True:\n        return None",
         tests=("tests/test_security_regressions.py",),
@@ -221,7 +221,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         id="cli-env-whitespace",
         property="a whitespace-only passphrase is rejected",
-        path="encryption_helper/cli.py",
+        path="encryption_helper/cli/_passphrase.py",
         old="        if not value.strip():",
         new="        if False:",
         tests=("tests/test_release_candidate.py",),
@@ -229,7 +229,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         id="cli-newline-semantics",
         property="exactly one trailing newline is stripped from a passphrase file",
-        path="encryption_helper/cli.py",
+        path="encryption_helper/cli/_passphrase.py",
         old='    if data.endswith(b"\\r\\n"):\n        return data[:-2]\n    if data.endswith(b"\\n"):\n        return data[:-1]\n    return data',
         new="    return data.strip()",
         tests=("tests/test_release_candidate.py",),

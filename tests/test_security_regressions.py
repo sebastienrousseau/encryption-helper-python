@@ -170,7 +170,9 @@ class TestUnencryptedKeysRequireConsent:
         )
 
     def test_interactive_session_prompts_for_a_passphrase(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("encryption_helper.cli._interactive", lambda: True)
+        monkeypatch.setattr(
+            "encryption_helper.cli._passphrase._interactive", lambda: True
+        )
         monkeypatch.setattr("getpass.getpass", lambda _prompt: SECRET_PASSPHRASE)
         code = main(["keygen", "--out-dir", str(tmp_path), "--key-size", "2048"])
         assert code == EXIT_OK
@@ -182,7 +184,9 @@ class TestUnencryptedKeysRequireConsent:
 
     def test_mismatched_confirmation_is_rejected(self, tmp_path, monkeypatch):
         answers = iter([SECRET_PASSPHRASE, "something else"])
-        monkeypatch.setattr("encryption_helper.cli._interactive", lambda: True)
+        monkeypatch.setattr(
+            "encryption_helper.cli._passphrase._interactive", lambda: True
+        )
         monkeypatch.setattr("getpass.getpass", lambda _prompt: next(answers))
         with pytest.raises(SystemExit) as excinfo:
             main(["keygen", "--out-dir", str(tmp_path), "--key-size", "2048"])
@@ -190,7 +194,9 @@ class TestUnencryptedKeysRequireConsent:
         assert not (tmp_path / "key.pem").exists()
 
     def test_empty_prompt_response_is_rejected(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("encryption_helper.cli._interactive", lambda: True)
+        monkeypatch.setattr(
+            "encryption_helper.cli._passphrase._interactive", lambda: True
+        )
         monkeypatch.setattr("getpass.getpass", lambda _prompt: "   ")
         with pytest.raises(SystemExit) as excinfo:
             main(["keygen", "--out-dir", str(tmp_path), "--key-size", "2048"])

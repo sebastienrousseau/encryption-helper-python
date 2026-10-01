@@ -12,7 +12,7 @@ The single rule: **secret material flows one way, and presentation lives at
 the edge.**
 
 ```text
-cli.py                  argument parsing, prompts, output, exit codes
+cli/                    argument parsing, prompts, output, exit codes
    │                    the ONLY module that prints or configures logging
    ▼
 keys/generate.py        produce a key object. no I/O, no logging
@@ -30,7 +30,7 @@ keys/store.py           the pair-write transaction
 _io.py                  permissions, atomicity, rollback
 ```
 
-Nothing below `cli.py` prints. `__init__.py` installs a `NullHandler` and
+Nothing below `cli/` prints. `__init__.py` installs a `NullHandler` and
 configures nothing, so a host application keeps control of logging.
 
 ## The invariant
@@ -142,7 +142,7 @@ marker an attacker can simply stop and the recipient cannot tell.
 
 Progress is reported by callback, not by printing: the streaming functions
 accept a `ProgressCallback` and invoke it with a cumulative byte count. The
-CLI owns throttling and formatting, so `cli.py` remains the only module that
+CLI owns throttling and formatting, so `cli/` remains the only layer that
 writes to a terminal.
 
 `decrypt_stream` writes each segment only after its tag verifies, but earlier
