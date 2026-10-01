@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
 from collections.abc import Sequence
 
 from ..errors import (
@@ -21,7 +20,11 @@ from ._constants import (
     EXIT_KEY_EXISTS,
     EXIT_OK,
 )
-from ._output import _configure_logging
+from ._output import (
+    _configure_logging,
+    emit_error,
+    record_output_mode,
+)
 from ._parser import build_parser
 
 logger = logging.getLogger(__name__)
@@ -38,34 +41,35 @@ def main(argv: Sequence[str] | None = None) -> int:
     """
     parser = build_parser()
     args = parser.parse_args(argv)
+    record_output_mode(args)
     _configure_logging(args)
 
     try:
         result: int = args.func(args)
     except KeyExistsError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        emit_error(str(exc), EXIT_KEY_EXISTS)
         return EXIT_KEY_EXISTS
     except (DecryptionError, SignatureVerificationError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        emit_error(str(exc), EXIT_CRYPTO_FAILURE)
         return EXIT_CRYPTO_FAILURE
     except EncryptionHelperError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        emit_error(str(exc), EXIT_ERROR)
         return EXIT_ERROR
     except BrokenPipeError:  # pragma: no cover - depends on the consumer
         # A downstream `head` closing the pipe is not an error.
         os._exit(EXIT_OK)
     except KeyboardInterrupt:  # pragma: no cover - interactive only
-        print("interrupted", file=sys.stderr)
+        emit_error("interrupted", EXIT_ERROR)
         return EXIT_ERROR
     except Exception:
         # An unexpected exception's text may quote a path, an argument, or a
         # value the user never meant to surface. Print a fixed message and
         # send the detail to the log, which the operator controls.
         logger.exception("Unexpected internal error")
-        print(
-            "error: unexpected internal error. Re-run with --log-level DEBUG "
-            "for details, and please report this.",
-            file=sys.stderr,
+        emit_error(
+            "unexpected internal error. Re-run with --log-level DEBUG for "
+            "details, and please report this.",
+            EXIT_ERROR,
         )
         return EXIT_ERROR
     return result

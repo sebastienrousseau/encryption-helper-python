@@ -16,6 +16,25 @@ EXIT_USAGE: Final = 2
 EXIT_KEY_EXISTS: Final = 3
 EXIT_CRYPTO_FAILURE: Final = 4
 
+#: Version of the ``--json`` output contract.
+#:
+#: Every JSON document this CLI emits carries this number. It is incremented
+#: only when a change could break a consumer: a field removed, renamed, or
+#: given a different meaning. Adding a field does not increment it, so a
+#: consumer should ignore fields it does not recognise.
+#:
+#: The contract is specified in ``docs/schemas/cli-output-v1.json``.
+JSON_SCHEMA_VERSION: Final = 1
+
+#: Machine-readable code for each failure, keyed by exit code. Automation
+#: should branch on these rather than on message text, which is not stable.
+ERROR_CODES: Final = {
+    1: "error",
+    2: "usage",
+    3: "key-exists",
+    4: "crypto-failure",
+}
+
 _STDIO = "-"
 _LOG_LEVELS: Final = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 

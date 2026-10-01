@@ -9,7 +9,6 @@ works when imported and fails when installed is a common and embarrassing bug.
 
 from __future__ import annotations
 
-import json
 import stat
 import subprocess
 import sys
@@ -24,7 +23,7 @@ from encryption_helper.cli import (
     main,
 )
 
-from ._support import posix_only
+from ._support import posix_only, result_of
 
 
 def keygen_argv(tmp_path, *extra: str) -> list[str]:
@@ -88,7 +87,11 @@ class TestKeygen:
     def test_warns_that_the_key_is_secret(self, tmp_path, capsys):
         """The warning goes to stderr so it survives stdout redirection."""
         main(["keygen", "--out-dir", str(tmp_path), "--no-passphrase"])
-        assert "PRIVATE KEY" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "is a private key" in err
+        # RSA can do both, so both clauses must appear.
+        assert "decrypt data encrypted to this key" in err
+        assert "produce signatures that verify against this key" in err
 
     def test_warns_when_the_key_is_unencrypted(self, tmp_path, capsys):
         main(["keygen", "--out-dir", str(tmp_path), "--no-passphrase"])
@@ -264,7 +267,7 @@ class TestKeygen:
                 "--no-passphrase",
             ]
         )
-        payload = json.loads(capsys.readouterr().out)
+        payload = result_of(capsys.readouterr().out)
         assert payload["fingerprint"].startswith("SHA256:")
         assert payload["encrypted"] is False
         assert payload["private_key"].endswith("key.pem")
@@ -457,7 +460,7 @@ class TestFingerprintCommand:
     def test_json_form(self, keypair, capsys):
         _, public = keypair
         main(["--json", "fingerprint", str(public)])
-        assert json.loads(capsys.readouterr().out)["fingerprint"].startswith("SHA256:")
+        assert result_of(capsys.readouterr().out)["fingerprint"].startswith("SHA256:")
 
 
 class TestConvert:
@@ -912,7 +915,7 @@ class TestStdoutOutput:
         captured = capsysbinary.readouterr()
         assert captured.out.startswith(b"EHEV")
         err = captured.err.decode()
-        payload = json.loads(err[err.index("{") :])
+        payload = result_of(err[err.index("{") :])
         assert payload["bytes"] == 7  # plaintext bytes read
         assert len(captured.out) > payload["bytes"]  # container is larger
 

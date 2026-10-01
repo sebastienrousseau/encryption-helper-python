@@ -30,7 +30,7 @@ from encryption_helper.keys import (
     store,
 )
 
-from ._support import posix_only
+from ._support import posix_only, result_of
 
 PRIVATE = "key.pem"
 PUBLIC = "key.pub.pem"
@@ -476,9 +476,7 @@ class TestNoPassphraseWarning:
         main(["--json", *keygen_rc_plain(tmp_path)])
         captured = capsys.readouterr()
 
-        import json
-
-        payload = json.loads(captured.out)
+        payload = result_of(captured.out)
         assert payload["encrypted"] is False
         assert "UNENCRYPTED" in captured.err
 
@@ -513,7 +511,7 @@ class TestNoPassphraseWarning:
         main(keygen_rc(tmp_path, "--passphrase-env", "EH_RC"))
         err = capsys.readouterr().err
         assert "UNENCRYPTED" not in err
-        assert "PRIVATE KEY" in err  # the general custody warning still appears
+        assert "is a private key" in err  # the custody warning still appears
 
 
 def keygen_rc(out_dir, *extra: str) -> list[str]:

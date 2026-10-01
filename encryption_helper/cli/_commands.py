@@ -26,7 +26,9 @@ from ..crypto.envelope import (
     QUANTUM_VULNERABLE_KEMS,
     SUPPORTED_KEMS,
 )
+from ..crypto.metadata import HEADER_SIZE, describe_container
 from ..crypto.streaming import decrypt_stream, encrypt_stream
+from ..inventory import Finding, scan, summarise
 from ..keys import (
     ALLOWED_RSA_KEY_SIZES,
     POST_QUANTUM,
@@ -41,12 +43,19 @@ from ..keys import (
     load_public_key_file,
     write_key_pair,
 )
+from ..policy import (
+    NIST_DEPRECATED_FROM,
+    NIST_DISALLOWED_FROM,
+    horizon,
+    purposes,
+)
 from ._constants import (
     _AEAD_ID_OFFSET,
     _PEEK_SIZE,
+    EXIT_ERROR,
     EXIT_OK,
 )
-from ._output import _emit
+from ._output import _emit, runtime_version
 from ._passphrase import (
     _load_private_key,
     _new_key_passphrase,
@@ -64,31 +73,29 @@ from ._warn import _warn_if_inside_git_worktree
 logger = logging.getLogger(__name__)
 
 
-def _resolve_runtime_version() -> str:
-    """Read the package version, deferred to keep import cost down."""
-    from .. import __version__  # noqa: PLC0415
-
-    return str(__version__)
-
-
 def _capabilities() -> dict[str, Any]:
     """Describe what this build can do, and what is on a deadline.
 
-    Machine-readable so a cryptographic inventory tool can answer "where is
-    our quantum-vulnerable material?" without parsing help text. NIST IR 8547
-    deprecates the classical algorithms from 2030 and disallows them from
-    2035, so the horizon is reported per algorithm rather than left implicit.
+    Machine-readable, so a cryptographic inventory process can identify
+    quantum-vulnerable material without parsing help text. The horizon is
+    reported per algorithm rather than left implicit, and the validation
+    note is included so any report quoting the horizon also carries the
+    caveat that applies to it.
     """
     return {
-        "version": _resolve_runtime_version(),
+        "version": runtime_version(),
         "algorithms": {
             name: {
                 "quantum_vulnerable": name in QUANTUM_VULNERABLE,
                 "post_quantum": name in POST_QUANTUM,
-                "deprecated_from": 2030 if name in QUANTUM_VULNERABLE else None,
-                "disallowed_from": 2035 if name in QUANTUM_VULNERABLE else None,
-                "can_encrypt": name in {"rsa", "x25519", "mlkem"},
-                "can_sign": name in {"rsa", "ed25519", "ed448", "ecdsa", "mldsa"},
+                "deprecated_from": (
+                    NIST_DEPRECATED_FROM if name in QUANTUM_VULNERABLE else None
+                ),
+                "disallowed_from": (
+                    NIST_DISALLOWED_FROM if name in QUANTUM_VULNERABLE else None
+                ),
+                "can_encrypt": purposes(name)["encrypt"],
+                "can_sign": purposes(name)["sign"],
             }
             for name in SUPPORTED_ALGORITHMS
         },
@@ -99,6 +106,7 @@ def _capabilities() -> dict[str, Any]:
         "quantum_vulnerable_kems": sorted(QUANTUM_VULNERABLE_KEMS),
         "formats": ["pem", "der", "openssh"],
         "standards": ["FIPS 203 (ML-KEM)", "FIPS 204 (ML-DSA)", "NIST IR 8547"],
+        "horizon": horizon(),
     }
 
 
@@ -142,13 +150,38 @@ def _warn_if_quantum_vulnerable(args: argparse.Namespace, algorithm: str) -> Non
     if args.quiet or algorithm not in QUANTUM_VULNERABLE:
         return
     print(
-        f"note: {algorithm} is broken by a quantum computer. NIST IR 8547 "
-        "deprecates it from\n"
-        "      2030 and disallows it from 2035. For key material that must "
-        "outlive those\n"
-        "      dates use --algorithm mlkem (encryption) or mldsa (signing).",
+        f"note: {algorithm} would be broken by a cryptanalytically relevant "
+        "quantum computer,\n"
+        "      which does not exist today. NIST IR 8547 (initial public "
+        "draft) deprecates it\n"
+        f"      from {NIST_DEPRECATED_FROM} and disallows it from "
+        f"{NIST_DISALLOWED_FROM}. Data encrypted now can be recorded\n"
+        "      and decrypted later, so where confidentiality must outlive "
+        "those dates use\n"
+        "      --algorithm mlkem (encryption) or mldsa (signing).",
         file=sys.stderr,
     )
+
+
+def _capability_phrase(algorithm: str) -> str:
+    """Describe what holding this private key would let someone do.
+
+    The custody warning used to say a leaked key let an attacker "impersonate
+    you and decrypt data sent to you". That is true only of RSA. For ML-KEM
+    and X25519, which cannot sign, the impersonation half is wrong; for
+    ML-DSA, Ed25519, Ed448 and ECDSA, which cannot decrypt, the other half is.
+    A warning that is half wrong is one a reader learns to discount, so the
+    phrase is derived from what the algorithm can actually do.
+    """
+    able = purposes(algorithm)
+    clauses = []
+    if able["encrypt"]:
+        clauses.append("decrypt data encrypted to this key")
+    if able["sign"]:
+        clauses.append("produce signatures that verify against this key")
+    if not clauses:  # pragma: no cover - every supported algorithm does one
+        return "use this key"
+    return " and ".join(clauses)
 
 
 def _cmd_keygen(args: argparse.Namespace) -> int:
@@ -174,10 +207,11 @@ def _cmd_keygen(args: argparse.Namespace) -> int:
     )
 
     warning = (
-        f"{result.private_key_path} is a PRIVATE KEY. Anyone who reads it can "
-        "impersonate you and decrypt data sent to you. It is stored with "
-        "owner-only permissions; keep it that way, and never commit it or "
-        "paste it into a chat or ticket."
+        f"{result.private_key_path} is a private key. Anyone able to read "
+        f"this file can {_capability_phrase(result.algorithm)}. It is stored "
+        "with owner-only permissions, which should be preserved. Do not "
+        "commit it to version control, and do not transmit it through chat "
+        "or ticketing systems."
     )
 
     # ML-KEM and ML-DSA sizes are parameter sets, not bit lengths. Calling
@@ -368,4 +402,96 @@ def _cmd_convert(args: argparse.Namespace) -> int:
 
     where = _write_output(args.output, data, mode=mode, force=args.force)
     _emit(args, f"Wrote {args.to} key to {where}", {"output": where, "format": args.to})
+    return EXIT_OK
+
+
+def _cmd_inspect(args: argparse.Namespace) -> int:
+    """Report a container's algorithms without decrypting it.
+
+    Reads only the header. No private key is involved, so this answers an
+    auditor's question -- which algorithm protects this file -- without
+    anyone having to hold the key that protects it.
+    """
+    with _input_stream(args.input) as source:
+        header = source.read(HEADER_SIZE)
+
+    info = describe_container(header)
+    posture_note = (
+        "Vulnerable to a quantum computer. Data recorded now can be decrypted "
+        "once a cryptanalytically relevant quantum computer exists, so this "
+        "file should be re-encrypted if its confidentiality must outlast that "
+        "point."
+        if info.quantum_vulnerable
+        else "Not vulnerable to a quantum computer."
+    )
+    rows = [
+        f"Format version:     {info.format_version}"
+        + ("" if info.readable else "  (too new for this build to read)"),
+        f"Key establishment:  {info.key_establishment or 'unrecognised'}"
+        + (
+            f"  [{info.key_establishment_standard}]"
+            if info.key_establishment_standard
+            else ""
+        ),
+        f"Content encryption: {info.content_encryption or 'unrecognised'}",
+        f"Segmented:          {'yes' if info.segmented else 'no'}",
+        "",
+        posture_note,
+    ]
+    _emit(args, "\n".join(rows), info.as_dict())
+    return EXIT_OK
+
+
+def _scan_rows(findings: list[Finding], summary: dict[str, Any]) -> list[str]:
+    """Render findings as a fixed-width table for a terminal."""
+    if not findings:
+        return ["No recognised cryptographic material found."]
+    rows = [
+        f"{'file':<40} {'kind':<22} {'algorithm':<12} action",
+        "-" * 86,
+    ]
+    for finding in findings:
+        algorithm = finding.algorithm or "undetermined"
+        if finding.key_size:
+            algorithm = f"{algorithm}-{finding.key_size}"
+        if finding.action_required:
+            action = f"migrate to {' or '.join(finding.replacements)}"
+        elif finding.undetermined:
+            action = "review manually"
+        else:
+            action = "none"
+        rows.append(
+            f"{str(finding.path)[-40:]:<40} {finding.kind:<22} {algorithm:<12} {action}"
+        )
+    rows += [
+        "",
+        f"{summary['examined']} examined, "
+        f"{summary['action_required']} needing migration, "
+        f"{summary['undetermined']} needing manual review.",
+        "",
+        f"Algorithms with a deadline are deprecated from "
+        f"{NIST_DEPRECATED_FROM} and disallowed from {NIST_DISALLOWED_FROM} "
+        "by NIST IR 8547.",
+    ]
+    return rows
+
+
+def _cmd_scan(args: argparse.Namespace) -> int:
+    """Report cryptographic material on disk and its migration status.
+
+    Reads public material only. Encrypted private keys are reported as
+    needing manual review rather than unlocked: a scan is not a reason to
+    handle a passphrase.
+    """
+    findings = scan(args.paths)
+    summary = summarise(findings)
+    payload: dict[str, Any] = {
+        "summary": summary,
+        "findings": [finding.as_dict() for finding in findings],
+        "horizon": horizon(),
+    }
+    _emit(args, "\n".join(_scan_rows(findings, summary)), payload)
+
+    if args.fail_on_finding and summary["needs_attention"]:
+        return EXIT_ERROR
     return EXIT_OK

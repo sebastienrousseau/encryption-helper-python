@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/hsbc/encryption-helper-python/blob/main/docs/schemas/cli-output-v1.json",
+  "title": "encryption-helper CLI output, version 1",
+  "description": "The document written to standard output when --json is given, and to standard error when the command is reporting a failure or when standard output is carrying the command's data. Fields may be added without incrementing schema_version, so a consumer must ignore fields it does not recognise. A field will not be removed, renamed, or given a different meaning without incrementing schema_version.",
+  "type": "object",
+  "required": ["schema_version", "status", "command", "tool"],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Version of this contract. Incremented only for a change that could break a consumer."
+    },
+    "status": {
+      "enum": ["ok", "error"],
+      "description": "Whether the command succeeded. Determines whether result or error is present."
+    },
+    "command": {
+      "type": ["string", "null"],
+      "description": "The subcommand that produced this document. Null only where the failure occurred before a subcommand was identified."
+    },
+    "tool": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string", "const": "encryption-helper" },
+        "version": { "type": "string", "description": "Installed distribution version." }
+      }
+    },
+    "result": {
+      "type": "object",
+      "description": "Present when status is ok. Its shape depends on the command.",
+      "properties": {
+        "fingerprint": { "type": "string" },
+        "algorithm": { "type": ["string", "null"] },
+        "key_size": { "type": ["integer", "null"] },
+        "private_key": { "type": "string" },
+        "public_key": { "type": "string" },
+        "encrypted": { "type": "boolean" },
+        "replaced": { "type": "boolean" },
+        "post_quantum": { "type": "boolean" },
+        "output": { "type": "string" },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "streaming": { "type": "boolean" },
+        "valid": { "type": "boolean" },
+        "format_version": { "type": "integer" },
+        "readable": { "type": "boolean" },
+        "key_establishment": { "type": ["string", "null"] },
+        "content_encryption": { "type": ["string", "null"] },
+        "segmented": { "type": "boolean" },
+        "quantum_vulnerable": { "type": ["boolean", "null"] },
+        "summary": {
+          "type": "object",
+          "description": "Emitted by scan.",
+          "required": [
+            "examined",
+            "action_required",
+            "quantum_vulnerable",
+            "undetermined",
+            "needs_attention",
+            "by_kind"
+          ],
+          "properties": {
+            "examined": { "type": "integer", "minimum": 0 },
+            "action_required": { "type": "integer", "minimum": 0 },
+            "quantum_vulnerable": { "type": "integer", "minimum": 0 },
+            "undetermined": { "type": "integer", "minimum": 0 },
+            "needs_attention": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Findings needing migration or manual review. Use this, not action_required, to gate a pipeline: an encrypted private key reports action_required as false only because its algorithm could not be read."
+            },
+            "by_kind": { "type": "object", "additionalProperties": { "type": "integer" } }
+          }
+        },
+        "findings": {
+          "type": "array",
+          "description": "Emitted by scan, ordered by path so two runs can be compared.",
+          "items": {
+            "type": "object",
+            "required": [
+              "path",
+              "kind",
+              "algorithm",
+              "quantum_vulnerable",
+              "action_required",
+              "undetermined",
+              "needs_attention",
+              "detail"
+            ],
+            "properties": {
+              "path": { "type": "string" },
+              "kind": {
+                "enum": [
+                  "public-key",
+                  "private-key",
+                  "encrypted-private-key",
+                  "certificate",
+                  "container"
+                ]
+              },
+              "algorithm": { "type": ["string", "null"] },
+              "key_size": { "type": ["integer", "null"] },
+              "quantum_vulnerable": { "type": ["boolean", "null"] },
+              "deprecated_from": { "type": ["integer", "null"] },
+              "disallowed_from": { "type": ["integer", "null"] },
+              "replacement": {
+                "type": ["string", "null"],
+                "description": "The single successor algorithm, or null where more than one applies. Null does not mean no migration is needed; read replacements."
+              },
+              "replacements": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Successor algorithms. Two entries means the key can both encrypt and sign, as RSA can, and the correct choice depends on how it is used."
+              },
+              "action_required": { "type": "boolean" },
+              "undetermined": { "type": "boolean" },
+              "needs_attention": { "type": "boolean" },
+              "detail": { "type": "string" },
+              "subject": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "horizon": {
+          "type": "object",
+          "required": ["deprecated_from", "disallowed_from", "references", "validation_note"],
+          "properties": {
+            "deprecated_from": { "type": "integer" },
+            "disallowed_from": { "type": "integer" },
+            "minimum_rsa_key_size_after_2030": { "type": "integer" },
+            "references": { "type": "array", "items": { "type": "string" } },
+            "validation_note": {
+              "type": "string",
+              "description": "Must be reproduced alongside any report quoting the dates. Using an algorithm specified in a FIPS publication is not a FIPS validation."
+            }
+          }
+        }
+      }
+    },
+    "error": {
+      "type": "object",
+      "description": "Present when status is error. Always written to standard error.",
+      "required": ["code", "message", "exit_code"],
+      "properties": {
+        "code": {
+          "enum": ["error", "usage", "key-exists", "crypto-failure"],
+          "description": "Stable machine-readable failure class. Branch on this rather than on message."
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable description. Not stable; do not match on it. Never contains key material or a passphrase."
+        },
+        "exit_code": { "type": "integer", "enum": [1, 2, 3, 4] }
+      }
+    }
+  }
+}

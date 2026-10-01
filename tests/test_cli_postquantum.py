@@ -11,14 +11,13 @@ one.
 from __future__ import annotations
 
 import io
-import json
 import stat
 
 import pytest
 from encryption_helper.cli import EXIT_KEY_EXISTS, EXIT_OK, EXIT_USAGE, main
 from encryption_helper.keys import POST_QUANTUM, QUANTUM_VULNERABLE
 
-from ._support import posix_only
+from ._support import posix_only, result_of
 
 
 def keygen(tmp_path, *extra: str) -> list[str]:
@@ -41,7 +40,7 @@ class TestCapabilities:
 
     def test_json_is_machine_readable(self, capsys):
         assert main(["--json", "capabilities"]) == EXIT_OK
-        caps = json.loads(capsys.readouterr().out)
+        caps = result_of(capsys.readouterr().out)
         assert caps["algorithms"]["mlkem"]["post_quantum"] is True
         assert caps["algorithms"]["mlkem"]["deprecated_from"] is None
         assert caps["algorithms"]["rsa"]["post_quantum"] is False
@@ -50,7 +49,7 @@ class TestCapabilities:
 
     def test_json_reports_capability_per_algorithm(self, capsys):
         main(["--json", "capabilities"])
-        caps = json.loads(capsys.readouterr().out)["algorithms"]
+        caps = result_of(capsys.readouterr().out)["algorithms"]
         expected = {
             "mlkem": (True, False),
             "mldsa": (False, True),
@@ -66,13 +65,13 @@ class TestCapabilities:
 
     def test_json_lists_container_mechanisms(self, capsys):
         main(["--json", "capabilities"])
-        caps = json.loads(capsys.readouterr().out)
+        caps = result_of(capsys.readouterr().out)
         assert caps["container_kems"] == [1, 2, 3, 4]
         assert caps["quantum_vulnerable_kems"] == [1, 4]
 
     def test_json_lists_parameter_sets(self, capsys):
         main(["--json", "capabilities"])
-        caps = json.loads(capsys.readouterr().out)
+        caps = result_of(capsys.readouterr().out)
         assert caps["mlkem_levels"] == [768, 1024]
         assert caps["mldsa_levels"] == [44, 65, 87]
         assert caps["rsa_key_sizes"] == [2048, 3072, 4096]
@@ -131,14 +130,14 @@ class TestPostQuantumKeygen:
 
     def test_json_distinguishes_parameter_set_from_key_size(self, tmp_path, capsys):
         main(["--json", *keygen(tmp_path, "--algorithm", "mlkem")])
-        payload = json.loads(capsys.readouterr().out)
+        payload = result_of(capsys.readouterr().out)
         assert payload["parameter_set"] == 768
         assert payload["post_quantum"] is True
 
     def test_json_marks_classical_keys(self, tmp_path, capsys):
         args = keygen(tmp_path, "--algorithm", "rsa", "--key-size", "2048")
         main(["--json", *args])
-        payload = json.loads(capsys.readouterr().out)
+        payload = result_of(capsys.readouterr().out)
         assert payload["parameter_set"] is None
         assert payload["post_quantum"] is False
 
@@ -395,7 +394,7 @@ class TestJsonStreamSeparation:
         # report gives equals exactly what landed on stdout -- nothing else
         # was written there.
         err = captured.err.decode()
-        payload = json.loads(err[err.index("{") :])
+        payload = result_of(err[err.index("{") :])
         assert payload["output"] == "<stdout>"
         # `bytes` is the plaintext read, not the ciphertext written, so the
         # meaningful check is that stdout carries a complete container.
@@ -419,7 +418,7 @@ class TestJsonStreamSeparation:
                 str(tmp_path / "m.bin"),
             ]
         )
-        assert json.loads(capsys.readouterr().out)["bytes"] > 0
+        assert result_of(capsys.readouterr().out)["bytes"] > 0
 
 
 class TestEdgeCases:
@@ -759,3 +758,46 @@ class TestBufferedPathEdges:
             == EXIT_OK
         )
         assert (tmp_path / "m.enc").read_bytes().startswith(b"EHEV")
+
+
+class TestCustodyWarningMatchesTheKeyPurpose:
+    """The warning must not claim a capability the key does not have.
+
+    It previously said a leaked key let an attacker "impersonate you and
+    decrypt data sent to you" for every algorithm. That is true only of RSA:
+    ML-KEM cannot sign and ML-DSA cannot decrypt, so half the sentence was
+    wrong in each case. A warning that is half wrong is one operators learn
+    to discount.
+    """
+
+    def test_an_encryption_only_key_is_not_described_as_signing(self, tmp_path, capsys):
+        main(keygen(tmp_path, "--algorithm", "mlkem"))
+        err = capsys.readouterr().err
+        assert "decrypt data encrypted to this key" in err
+        assert "signatures" not in err
+
+    def test_a_signing_only_key_is_not_described_as_decrypting(self, tmp_path, capsys):
+        main(keygen(tmp_path, "--algorithm", "mldsa"))
+        err = capsys.readouterr().err
+        assert "produce signatures that verify against this key" in err
+        assert "decrypt" not in err
+
+    def test_rsa_is_described_as_doing_both(self, tmp_path, capsys):
+        main(keygen(tmp_path, "--algorithm", "rsa", "--key-size", "2048"))
+        err = capsys.readouterr().err
+        assert "decrypt data encrypted to this key" in err
+        assert "produce signatures that verify against this key" in err
+
+    def test_the_quantum_note_does_not_claim_the_computer_exists(
+        self, tmp_path, capsys
+    ):
+        """No quantum computer breaks RSA today; the note must not imply one does."""
+        main(keygen(tmp_path, "--algorithm", "rsa", "--key-size", "2048"))
+        err = capsys.readouterr().err
+        assert "would be broken" in err
+        assert "which does not exist today" in err
+        assert "is broken by a quantum computer" not in err
+
+    def test_a_post_quantum_key_gets_no_quantum_note(self, tmp_path, capsys):
+        main(keygen(tmp_path, "--algorithm", "mlkem"))
+        assert "would be broken" not in capsys.readouterr().err

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+from typing import TYPE_CHECKING
 
 from ..crypto.streaming import DEFAULT_SEGMENT_SIZE
 from ..keys import (
@@ -24,7 +25,9 @@ from ._commands import (
     _cmd_decrypt,
     _cmd_encrypt,
     _cmd_fingerprint,
+    _cmd_inspect,
     _cmd_keygen,
+    _cmd_scan,
     _cmd_sign,
     _cmd_verify,
 )
@@ -136,6 +139,15 @@ def _add_io_flags(parser: argparse.ArgumentParser, *, output: bool = True) -> No
         )
 
 
+if TYPE_CHECKING:
+    # argparse publishes no name for the subparsers action, and the
+    # private one is generic only to the type checker -- subscripting it
+    # at runtime raises TypeError. Aliasing it here keeps the annotation
+    # precise in all ten builders without a runtime cost, because
+    # `from __future__ import annotations` leaves them unevaluated.
+    _SubParsers = argparse._SubParsersAction[argparse.ArgumentParser]
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construct the argument parser for the whole command tree.
 
@@ -186,6 +198,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(dest="command", metavar="COMMAND", required=True)
 
+    _add_keygen(sub)
+    _add_encrypt(sub)
+    _add_decrypt(sub)
+    _add_sign(sub)
+    _add_verify(sub)
+    _add_fingerprint(sub)
+    _add_capabilities(sub)
+    _add_inspect(sub)
+    _add_scan(sub)
+    _add_convert(sub)
+
+    return parser
+
+
+def _add_keygen(sub: _SubParsers) -> None:
+    """Generate a key pair."""
     keygen = sub.add_parser(
         "keygen",
         help="Generate a key pair.",
@@ -264,6 +292,9 @@ def build_parser() -> argparse.ArgumentParser:
     _add_passphrase_flags(keygen, allow_opt_out=True)
     keygen.set_defaults(func=_cmd_keygen)
 
+
+def _add_encrypt(sub: _SubParsers) -> None:
+    """Encrypt data."""
     enc = sub.add_parser(
         "encrypt",
         help="Encrypt data to a public key.",
@@ -276,6 +307,9 @@ def build_parser() -> argparse.ArgumentParser:
     _add_io_flags(enc)
     enc.set_defaults(func=_cmd_encrypt)
 
+
+def _add_decrypt(sub: _SubParsers) -> None:
+    """Decrypt a container."""
     dec = sub.add_parser(
         "decrypt",
         help="Decrypt data with a private key.",
@@ -286,6 +320,9 @@ def build_parser() -> argparse.ArgumentParser:
     _add_passphrase_flags(dec)
     dec.set_defaults(func=_cmd_decrypt)
 
+
+def _add_sign(sub: _SubParsers) -> None:
+    """Sign data."""
     sgn = sub.add_parser(
         "sign",
         help="Sign data with a private key.",
@@ -296,6 +333,9 @@ def build_parser() -> argparse.ArgumentParser:
     _add_passphrase_flags(sgn)
     sgn.set_defaults(func=_cmd_sign)
 
+
+def _add_verify(sub: _SubParsers) -> None:
+    """Verify a signature."""
     vfy = sub.add_parser(
         "verify",
         help="Verify a signature.",
@@ -306,6 +346,9 @@ def build_parser() -> argparse.ArgumentParser:
     _add_io_flags(vfy, output=False)
     vfy.set_defaults(func=_cmd_verify)
 
+
+def _add_fingerprint(sub: _SubParsers) -> None:
+    """Print a key fingerprint."""
     fpr = sub.add_parser(
         "fingerprint",
         help="Print a public key fingerprint.",
@@ -317,6 +360,9 @@ def build_parser() -> argparse.ArgumentParser:
     fpr.add_argument("key", metavar="PATH")
     fpr.set_defaults(func=_cmd_fingerprint)
 
+
+def _add_capabilities(sub: _SubParsers) -> None:
+    """Report what this build supports."""
     caps = sub.add_parser(
         "capabilities",
         help="Report supported algorithms and their post-quantum status.",
@@ -328,6 +374,58 @@ def build_parser() -> argparse.ArgumentParser:
     )
     caps.set_defaults(func=_cmd_capabilities)
 
+
+def _add_inspect(sub: _SubParsers) -> None:
+    """Describe a container without decrypting it."""
+    insp = sub.add_parser(
+        "inspect",
+        help="Report a container's algorithms without decrypting it.",
+        description=(
+            "Report which algorithms protect an encrypted file, reading only "
+            "its header. No private key is required and no plaintext is "
+            "recovered, so this can be run by someone who is not entitled to "
+            "the contents."
+        ),
+    )
+    _add_io_flags(insp, output=False)
+    insp.set_defaults(func=_cmd_inspect)
+
+
+def _add_scan(sub: _SubParsers) -> None:
+    """Inventory cryptographic material on disk."""
+    scn = sub.add_parser(
+        "scan",
+        help="Report cryptographic material on disk and its migration status.",
+        description=(
+            "Examine files and directory trees for keys, certificates and "
+            "encrypted files, and report which use algorithms that NIST IR "
+            "8547 deprecates from 2030 and disallows from 2035.\n\n"
+            "Classification is by file contents, not by filename. Symbolic "
+            "links are not followed and no passphrase is requested, so an "
+            "encrypted private key is reported as needing manual review "
+            "rather than being unlocked."
+        ),
+    )
+    scn.add_argument(
+        "paths",
+        nargs="+",
+        metavar="PATH",
+        help="Files or directories to examine. Directories are walked.",
+    )
+    scn.add_argument(
+        "--fail-on-finding",
+        action="store_true",
+        help=(
+            "Exit non-zero if anything needs migration or manual review, so "
+            "the scan can gate a pipeline. Off by default, because reporting "
+            "an inventory is not itself a failure."
+        ),
+    )
+    scn.set_defaults(func=_cmd_scan)
+
+
+def _add_convert(sub: _SubParsers) -> None:
+    """Convert a key between encodings."""
     cvt = sub.add_parser(
         "convert",
         help="Convert a key between encodings.",
@@ -345,5 +443,3 @@ def build_parser() -> argparse.ArgumentParser:
     _add_io_flags(cvt)
     _add_passphrase_flags(cvt)
     cvt.set_defaults(func=_cmd_convert)
-
-    return parser

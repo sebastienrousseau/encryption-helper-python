@@ -53,3 +53,35 @@ source_tree_only = pytest.mark.skipif(
     not _in_source_tree(),
     reason="repository-hygiene check; not applicable to an installed wheel",
 )
+
+
+def envelope(text: str) -> dict:
+    """Parse a CLI JSON document, asserting the envelope contract holds.
+
+    Every assertion here is part of the published contract in
+    ``docs/schemas/cli-output-v1.json``. Checking it at each call site rather
+    than once means a command that forgets the envelope fails the test that
+    reads its output, not a separate test somewhere else.
+    """
+    import json
+
+    document = json.loads(text)
+    assert document["schema_version"] == 1, document
+    assert document["status"] in {"ok", "error"}, document
+    assert document["tool"]["name"] == "encryption-helper", document
+    assert isinstance(document["tool"]["version"], str), document
+    return document
+
+
+def result_of(text: str) -> dict:
+    """Return the ``result`` body of a successful CLI JSON document."""
+    document = envelope(text)
+    assert document["status"] == "ok", document
+    return document["result"]
+
+
+def error_of(text: str) -> dict:
+    """Return the ``error`` body of a failed CLI JSON document."""
+    document = envelope(text)
+    assert document["status"] == "error", document
+    return document["error"]

@@ -4,7 +4,8 @@
 
 :func:`~encryption_helper.crypto.envelope.encrypt` holds the whole message in
 memory, and peak usage measures at roughly four times the payload. That is
-fine for keys, credentials and documents, and hopeless for a 5 GB file.
+appropriate for keys, credentials and documents, and unsuitable for a
+5 GB file.
 
 This module encrypts in fixed-size segments so memory stays bounded at a few
 hundred kilobytes regardless of input size.
@@ -58,9 +59,9 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from ..errors import DecryptionError, InvalidArgumentError
 from .envelope import (
-    _HEADER_STRUCT,
     _TAG_SIZE,
     AEAD_AES_256_GCM_STREAM,
+    HEADER_STRUCT,
     MAGIC,
     VERSION,
     _decapsulate,
@@ -188,7 +189,7 @@ def encrypt_stream(  # noqa: PLR0913 - three of six are keyword-only options
     kem_id = _kem_for_public_key(public_key)
     content_key, encapsulation = _encapsulate(public_key, kem_id)
 
-    header = _HEADER_STRUCT.pack(
+    header = HEADER_STRUCT.pack(
         MAGIC, VERSION, kem_id, AEAD_AES_256_GCM_STREAM, 0, len(encapsulation)
     )
     prefix = os.urandom(_PREFIX_SIZE)
@@ -253,12 +254,12 @@ def _parse_stream_header(
         DecryptionError: If the framing is malformed, truncated, or not a
             streaming container.
     """
-    header = _read_exact(source, _HEADER_STRUCT.size)
-    if len(header) < _HEADER_STRUCT.size:
+    header = _read_exact(source, HEADER_STRUCT.size)
+    if len(header) < HEADER_STRUCT.size:
         msg = "Ciphertext is too short to be a valid container."
         raise DecryptionError(msg)
 
-    magic, version, kem_id, aead_id, reserved, encap_len = _HEADER_STRUCT.unpack(header)
+    magic, version, kem_id, aead_id, reserved, encap_len = HEADER_STRUCT.unpack(header)
     if magic != MAGIC:
         msg = "Not an encryption-helper container: bad magic bytes."
         raise DecryptionError(msg)

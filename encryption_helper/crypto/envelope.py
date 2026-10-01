@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2024-2026 HSBC Group Management Services Limited
-"""Hybrid (envelope) encryption using RSA-OAEP and AES-256-GCM.
+"""Hybrid (envelope) encryption: AES-256-GCM under an encapsulated key.
 
 RSA cannot encrypt arbitrary-length data. A 3072-bit key with OAEP-SHA256 can
 carry roughly 318 bytes, and naively calling ``public_key.encrypt(plaintext)``
-either fails on anything larger or -- worse, in libraries that silently chunk
-it -- produces something that looks like it works and is not secure. That
-mistake is the most common way a "helper" library becomes a vulnerability.
+fails on anything larger. Splitting the plaintext into key-sized blocks and
+encrypting each one is not a secure mode of operation, so this module uses
+hybrid encryption instead, as TLS, JWE and OpenPGP do.
 
 This module does what TLS, JWE, age and PGP all do instead:
 
@@ -22,11 +22,14 @@ The container header, wrapped key and nonce are all fed to the AEAD as
 associated data, so any modification to the framing is detected as tampering
 rather than silently reinterpreted.
 
-.. warning::
-   Encryption and decryption operate on whole messages held in memory. This is
-   appropriate for keys, credentials, configuration and documents. It is not
-   suitable for multi-gigabyte files; streaming support is deliberately not
-   implemented rather than implemented badly.
+.. note::
+   :func:`encrypt` and :func:`decrypt` hold the whole message in memory, which
+   suits keys, credentials, configuration and documents. For larger inputs use
+   :func:`~encryption_helper.crypto.streaming.encrypt_stream` and
+   :func:`~encryption_helper.crypto.streaming.decrypt_stream`, which process
+   the payload in independently authenticated segments at bounded memory. The
+   command-line interface selects the segmented path for file input
+   automatically and reads either format.
 """
 
 from __future__ import annotations
@@ -50,6 +53,7 @@ from ..errors import DecryptionError, InvalidArgumentError
 __all__ = [
     "AEAD_AES_256_GCM",
     "AEAD_AES_256_GCM_STREAM",
+    "HEADER_STRUCT",
     "MAGIC",
     "SUPPORTED_KEMS",
     "VERSION",
@@ -90,8 +94,12 @@ AEAD_AES_256_GCM: Final = 1
 AEAD_AES_256_GCM_STREAM: Final = 2
 
 #: ``magic | version | kem | aead | reserved | wrapped key length``.
-_HEADER_STRUCT: Final = struct.Struct(">4sBBBBH")
-_HEADER_SIZE: Final = _HEADER_STRUCT.size
+#: The container header layout: magic, version, kem_id, aead_id, one
+#: reserved byte, then the encapsulation length. This is the single
+#: definition of the format; :mod:`.metadata` reads it rather than
+#: restating it, so the two cannot drift apart.
+HEADER_STRUCT: Final = struct.Struct(">4sBBBBH")
+_HEADER_SIZE: Final = HEADER_STRUCT.size
 
 #: GCM standard nonce length. 96 bits is the only size with a security proof
 #: for the standard construction.
@@ -335,7 +343,7 @@ def encrypt(
     """Encrypt ``plaintext`` to the holder of ``public_key``.
 
     Args:
-        public_key: Recipient's RSA public key.
+        public_key: Recipient's public key. RSA, ML-KEM or X25519.
         plaintext: Data to encrypt. May be empty.
         associated_data: Optional context to authenticate but not encrypt. The
             same value must be supplied to :func:`decrypt`. Use it to bind a
@@ -352,16 +360,16 @@ def encrypt(
     Example:
         >>> from encryption_helper.keys.generate import generate_rsa
         >>> key = generate_rsa(key_size=2048)
-        >>> blob = encrypt(key.public_key(), b"attack at dawn")
+        >>> blob = encrypt(key.public_key(), b"example payload")
         >>> decrypt(key, blob)
-        b'attack at dawn'
+        b'example payload'
     """
     kem_id = _kem_for_public_key(public_key)
 
     content_key, encapsulation = _encapsulate(public_key, kem_id)
 
     nonce = os.urandom(_NONCE_SIZE)
-    header = _HEADER_STRUCT.pack(
+    header = HEADER_STRUCT.pack(
         MAGIC, VERSION, kem_id, AEAD_AES_256_GCM, 0, len(encapsulation)
     )
     ciphertext = AESGCM(content_key).encrypt(
@@ -382,7 +390,7 @@ def _parse(blob: bytes) -> tuple[bytes, int, bytes, bytes, bytes]:
         raise DecryptionError(msg)
 
     header = blob[:_HEADER_SIZE]
-    magic, version, kem_id, aead_id, reserved, wrapped_len = _HEADER_STRUCT.unpack(
+    magic, version, kem_id, aead_id, reserved, wrapped_len = HEADER_STRUCT.unpack(
         header
     )
 
@@ -437,7 +445,7 @@ def decrypt(
     """Decrypt a container produced by :func:`encrypt`.
 
     Args:
-        private_key: RSA private key matching the public key used to encrypt.
+        private_key: Private key matching the public key used to encrypt.
         blob: The encrypted container.
         associated_data: The same value passed to :func:`encrypt`, if any.
 

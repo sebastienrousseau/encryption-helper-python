@@ -52,6 +52,7 @@ from __future__ import annotations
 import logging
 
 from .crypto import decrypt, encrypt, is_valid_signature, sign, verify
+from .crypto.metadata import ContainerInfo, describe_container, is_container
 from .errors import (
     DecryptionError,
     EncryptionHelperError,
@@ -64,6 +65,7 @@ from .errors import (
     SignatureVerificationError,
     UnsupportedAlgorithmError,
 )
+from .inventory import Finding, classify, scan, summarise
 from .keys import (
     POST_QUANTUM,
     QUANTUM_VULNERABLE,
@@ -85,6 +87,7 @@ from .keys import (
     load_public_key_file,
     write_key_pair,
 )
+from .policy import Posture, assess, horizon
 
 
 def _resolve_version() -> str:
@@ -125,8 +128,10 @@ logging.getLogger(__name__).addHandler(logging.NullHandler())
 __all__ = [
     "POST_QUANTUM",
     "QUANTUM_VULNERABLE",
+    "ContainerInfo",
     "DecryptionError",
     "EncryptionHelperError",
+    "Finding",
     "InvalidArgumentError",
     "KeyExistsError",
     "KeyGenerationError",
@@ -134,10 +139,14 @@ __all__ = [
     "KeyPairValidationError",
     "KeyReadError",
     "KeyWriteError",
+    "Posture",
     "SignatureVerificationError",
     "UnsupportedAlgorithmError",
     "__version__",
+    "assess",
+    "classify",
     "decrypt",
+    "describe_container",
     "encode_private_key",
     "encode_public_key",
     "encrypt",
@@ -150,12 +159,16 @@ __all__ = [
     "generate_mlkem",
     "generate_rsa",
     "generate_x25519",
+    "horizon",
+    "is_container",
     "is_valid_signature",
     "load_private_key",
     "load_private_key_file",
     "load_public_key",
     "load_public_key_file",
+    "scan",
     "sign",
+    "summarise",
     "verify",
     "write_key_pair",
 ]

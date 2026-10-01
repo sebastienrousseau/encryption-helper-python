@@ -37,6 +37,7 @@ from ._constants import (
     EXIT_KEY_EXISTS,
     EXIT_OK,
     EXIT_USAGE,
+    JSON_SCHEMA_VERSION,
     MAX_PASSPHRASE_FILE_BYTES,
 )
 from ._main import main
@@ -49,6 +50,7 @@ __all__ = [
     "EXIT_KEY_EXISTS",
     "EXIT_OK",
     "EXIT_USAGE",
+    "JSON_SCHEMA_VERSION",
     "MAX_PASSPHRASE_FILE_BYTES",
     "build_parser",
     "main",

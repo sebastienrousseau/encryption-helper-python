@@ -66,7 +66,16 @@ class TestPublicAPI:
             if not name.startswith("_") and name != "annotations"
         }
         # Submodules are reachable but are not part of the curated surface.
-        public -= {"crypto", "errors", "keys", "cli", "logging", "metadata"}
+        public -= {
+            "cli",
+            "crypto",
+            "errors",
+            "inventory",
+            "keys",
+            "logging",
+            "metadata",
+            "policy",
+        }
         assert public <= set(encryption_helper.__all__), sorted(
             public - set(encryption_helper.__all__)
         )
