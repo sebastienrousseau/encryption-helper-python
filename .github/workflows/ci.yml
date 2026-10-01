@@ -110,6 +110,23 @@ jobs:
         working-directory: fuzz
         run: python run_fuzz.py --iterations 50000
 
+  mutation:
+    name: Mutation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip -e . pytest pytest-cov hypothesis
+      # Breaks twenty security properties on purpose and asserts some test
+      # fails for each. A survivor means a property is asserted nowhere.
+      # Coverage says lines were executed; this says the assertions bite.
+      - name: Verify the tests detect broken security properties
+        run: python scripts/mutation_check.py
+
   examples:
     name: Examples and benchmarks
     runs-on: ubuntu-latest
@@ -258,7 +275,7 @@ jobs:
   ci-ok:
     name: CI passed
     if: always()
-    needs: [lint, types, test, fuzz, examples, security, build]
+    needs: [lint, types, test, mutation, fuzz, examples, security, build]
     runs-on: ubuntu-latest
     steps:
       - name: Fail if any dependency failed
