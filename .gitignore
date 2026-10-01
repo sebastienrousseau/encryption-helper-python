@@ -138,3 +138,7 @@ id_ecdsa*
 !tests/fixtures/**/*.pem
 !tests/fixtures/**/*.der
 build/
+
+# mutmut scratch output
+mutants/
+.mutmut-cache
