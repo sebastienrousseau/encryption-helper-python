@@ -83,8 +83,10 @@ MUTATIONS: tuple[Mutation, ...] = (
         id="io-restore",
         property="a write that fails after displacing a file restores it",
         path="encryption_helper/_io.py",
-        old='        if backup is not None and backup_mode is not None:\n            _restore(backup, target, backup_mode)\n        msg = f"Could not write to {target}: {exc.strerror}"',
-        new='        msg = f"Could not write to {target}: {exc.strerror}"',
+        # Three call sites restore a displaced file; this anchors to the
+        # final commit path via the preceding tmp_path.unlink().
+        old="            tmp_path.unlink()\n        if backup is not None and backup_mode is not None:\n            _restore(backup, target, backup_mode)",
+        new="            tmp_path.unlink()",
         tests=("tests/test_release_candidate.py",),
     ),
     Mutation(
