@@ -46,7 +46,13 @@ def main() -> int:
     # `authorized_keys` expects.
     for fmt in ("pem", "der", "openssh"):
         encoded = encode_public_key(public, fmt=fmt)
-        preview = encoded[:32].decode("ascii", errors="replace").strip()
+        # PEM and OpenSSH are text; DER is binary. Decoding binary with
+        # errors="replace" yields U+FFFD, which a Windows console using
+        # cp1252 cannot encode -- so binary is previewed as hex instead.
+        if fmt == "der":
+            preview = encoded[:16].hex(" ")
+        else:
+            preview = encoded[:32].decode("ascii").strip()
         print(f"{fmt:>8}: {len(encoded):>4} bytes  {preview}...")
 
     return 0
