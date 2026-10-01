@@ -222,7 +222,10 @@ class TestUnencryptedKeysRequireConsent:
 class TestDestinationHandling:
     def test_tilde_is_expanded_not_taken_literally(self, tmp_path, monkeypatch):
         """Regression: `--out-dir ~/keys` created a directory named `~`."""
+        # Path.expanduser() reads HOME on POSIX and USERPROFILE on
+        # Windows, so both are set to keep this meaningful on either.
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
         monkeypatch.chdir(tmp_path)
         code = main(
             [

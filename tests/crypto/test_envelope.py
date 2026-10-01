@@ -24,9 +24,18 @@ from hypothesis import strategies as st
 
 
 class TestRoundTrip:
+    # Explicit ids: a parametrised payload otherwise lands verbatim in the
+    # test id, which both bloats output and can exceed the Windows
+    # environment-variable limit via PYTEST_CURRENT_TEST.
     @pytest.mark.parametrize(
         "plaintext",
-        [b"", b"a", b"attack at dawn", b"\x00" * 100, bytes(range(256))],
+        [
+            pytest.param(b"", id="empty"),
+            pytest.param(b"a", id="single-byte"),
+            pytest.param(b"attack at dawn", id="short-text"),
+            pytest.param(b"\x00" * 100, id="100-nulls"),
+            pytest.param(bytes(range(256)), id="all-byte-values"),
+        ],
     )
     def test_round_trips(self, rsa_key, plaintext):
         assert decrypt(rsa_key, encrypt(rsa_key.public_key(), plaintext)) == plaintext
@@ -268,9 +277,12 @@ class TestKeyEncapsulationMechanisms:
     @pytest.mark.parametrize(
         "fixture", ["rsa_key", "mlkem_key", "mlkem1024_key", "x25519_key"]
     )
-    @pytest.mark.parametrize("plaintext", [b"", b"a", b"x" * 100_000])
-    def test_round_trip(self, request, fixture, plaintext):
+    # Sizes, not payloads: a large parametrised value lands in the test
+    # ID, and Windows caps PYTEST_CURRENT_TEST at 32,767 characters.
+    @pytest.mark.parametrize("size", [0, 1, 100_000])
+    def test_round_trip(self, request, fixture, size):
         key = request.getfixturevalue(fixture)
+        plaintext = b"x" * size
         assert decrypt(key, encrypt(key.public_key(), plaintext)) == plaintext
 
     @pytest.mark.parametrize("fixture", ["mlkem_key", "mlkem1024_key", "x25519_key"])

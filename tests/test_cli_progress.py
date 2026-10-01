@@ -20,6 +20,8 @@ from encryption_helper.cli import (
     main,
 )
 
+from ._support import posix_only
+
 
 def keygen(tmp_path, *extra: str) -> list[str]:
     return [
@@ -238,9 +240,14 @@ class TestCliIntegration:
         assert "%" not in err
 
 
+@posix_only
 class TestNonRegularDestinations:
     """`--out /dev/null` is a legitimate way to discard output, and renaming a
-    temporary file over /dev/null would destroy the device node."""
+    temporary file over /dev/null would destroy the device node.
+
+    POSIX only: Windows has no /dev/null path, and the equivalent (NUL) has
+    different semantics, so this is skipped rather than faked.
+    """
 
     def test_writing_to_dev_null_succeeds(self, setup):
         keys, payload = setup
