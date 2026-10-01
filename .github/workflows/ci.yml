@@ -37,15 +37,20 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+      # From the lockfile, not `pip install ruff`. An unpinned linter lets
+      # an upstream release fail the build and makes CI disagree with a
+      # developer's machine; both happened on the first real run.
       - name: Install tooling
-        run: python -m pip install --upgrade pip ruff
+        run: |
+          python -m pip install --upgrade pip poetry
+          poetry install --only dev --no-root
       # No --exit-zero anywhere: a lint error fails the build. The previous
       # workflow ran flake8 twice, the second time with --exit-zero, so lint
       # findings could never block a merge.
       - name: ruff check
-        run: ruff check --output-format=github .
+        run: poetry run ruff check --output-format=github .
       - name: ruff format
-        run: ruff format --check --diff .
+        run: poetry run ruff format --check --diff .
 
   types:
     name: Type check
@@ -57,8 +62,11 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: python -m pip install --upgrade pip mypy cryptography pytest
-      - run: mypy --strict encryption_helper
+      - run: |
+          python -m pip install --upgrade pip poetry
+          poetry install --only dev --no-root
+          poetry run pip install -e .
+      - run: poetry run mypy --strict encryption_helper
 
   test:
     name: Test ${{ matrix.python-version }} on ${{ matrix.os }}

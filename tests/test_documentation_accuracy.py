@@ -18,8 +18,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover - the 3.10 CI leg only
+    import tomli as tomllib
+
 import pytest
-import tomllib
 from encryption_helper import errors
 from encryption_helper.cli import (
     EXIT_CRYPTO_FAILURE,
