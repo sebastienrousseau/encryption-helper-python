@@ -168,9 +168,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         id="stream-final-flag",
         property="truncation is detected (the last segment is marked final)",
         path="encryption_helper/crypto/streaming.py",
-        old='''    return (
-        prefix + number.to_bytes(_COUNTER_SIZE, "big") + (b"\x01" if final else b"\x00")
-    )''',
+        old='    return (\n        prefix + number.to_bytes(_COUNTER_SIZE, "big") + (b"\\x01" if final else b"\\x00")',
         new='    return prefix + number.to_bytes(_COUNTER_SIZE, "big") + b"\\x00"',
         tests=("tests/crypto/test_streaming.py",),
     ),
@@ -178,9 +176,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         id="stream-counter",
         property="segment reordering and dropping are detected",
         path="encryption_helper/crypto/streaming.py",
-        old='''    return (
-        prefix + number.to_bytes(_COUNTER_SIZE, "big") + (b"\x01" if final else b"\x00")
-    )''',
+        old='    return (\n        prefix + number.to_bytes(_COUNTER_SIZE, "big") + (b"\\x01" if final else b"\\x00")',
         new='    return prefix + bytes(_COUNTER_SIZE) + (b"\\x01" if final else b"\\x00")',
         tests=("tests/crypto/test_streaming.py",),
     ),
