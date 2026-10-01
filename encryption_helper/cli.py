@@ -34,6 +34,7 @@ import os
 import stat
 import sys
 import tempfile
+import time
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import IO, Any, Final, NoReturn
@@ -60,6 +61,7 @@ from .errors import (
     EncryptionHelperError,
     KeyExistsError,
     KeyReadError,
+    KeyWriteError,
     SignatureVerificationError,
 )
 from .keys import (
@@ -112,12 +114,112 @@ DEFAULT_MAX_INPUT_BYTES: Final = 64 * 1024 * 1024
 _AEAD_ID_OFFSET: Final = 6
 _PEEK_SIZE: Final = _AEAD_ID_OFFSET + 1
 
+#: Binary unit step, for formatting byte counts.
+_UNIT_STEP: Final = 1024
+
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _format_bytes(count: int) -> str:
+    """Render a byte count in the largest unit that keeps it readable."""
+    size = float(count)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if size < _UNIT_STEP or unit == "GiB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= _UNIT_STEP
+    return f"{size:.1f} TiB"  # pragma: no cover - unreachable, loop returns
+
+
+def _format_duration(seconds: float) -> str:
+    """Render a duration compactly."""
+    if seconds < 60:  # noqa: PLR2004
+        return f"{seconds:.0f}s"
+    minutes, secs = divmod(int(seconds), 60)
+    return f"{minutes}m{secs:02d}s"
+
+
+class _ProgressReporter:
+    """Report streaming progress to stderr, throttled.
+
+    On stderr rather than stdout because stdout may be carrying the
+    command's output. Throttled to one update per interval so a fast
+    operation does not spend more time formatting than encrypting -- at
+    1.5 GB/s with 256 KiB segments there are roughly 6,000 callbacks a
+    second, and printing each would dominate the run.
+
+    When the input size is known the line includes a percentage and an ETA.
+    Reading from a pipe it cannot be, so only the running total and rate are
+    shown.
+    """
+
+    #: Minimum seconds between updates.
+    INTERVAL = 0.2
+
+    def __init__(self, total: int | None, *, stream: IO[str] | None = None) -> None:
+        self._total = total
+        self._stream = stream if stream is not None else sys.stderr
+        self._started = time.monotonic()
+        self._last = 0.0
+        self._interactive = self._stream.isatty()
+
+    def __call__(self, processed: int) -> None:
+        """Receive a cumulative byte count from the streaming layer."""
+        now = time.monotonic()
+        if now - self._last < self.INTERVAL:
+            return
+        self._last = now
+        self._write(processed, now, final=False)
+
+    def finish(self, processed: int) -> None:
+        """Emit a final line, whatever the throttle said."""
+        self._write(processed, time.monotonic(), final=True)
+        if self._interactive:
+            self._stream.write("\n")
+        self._stream.flush()
+
+    def _write(self, processed: int, now: float, *, final: bool) -> None:
+        elapsed = max(now - self._started, 1e-9)
+        rate = processed / elapsed
+        parts = [f"{_format_bytes(processed)}"]
+        if self._total:
+            percent = min(100.0, processed * 100.0 / self._total)
+            parts.append(f"{percent:5.1f}%")
+            if rate > 0 and not final:
+                remaining = max(self._total - processed, 0) / rate
+                parts.append(f"ETA {_format_duration(remaining)}")
+        parts.append(f"{_format_bytes(int(rate))}/s")
+        if final:
+            parts.append(f"in {_format_duration(elapsed)}")
+        line = "  ".join(parts)
+        # Overwrite in place on a terminal; append lines when redirected, so a
+        # log stays readable.
+        self._stream.write(f"\r{line}\x1b[K" if self._interactive else f"{line}\n")
+        self._stream.flush()
+
+
+def _make_progress(
+    args: argparse.Namespace, source: str
+) -> tuple[_ProgressReporter | None, None]:
+    """Build a reporter when ``--progress`` was asked for.
+
+    Returns:
+        A ``(reporter, None)`` pair; the second element keeps the call site
+        symmetrical with other optional-resource helpers.
+    """
+    if not getattr(args, "progress", False) or args.quiet:
+        return None, None
+    total: int | None = None
+    if source != _STDIO:
+        try:
+            total = Path(source).expanduser().stat().st_size
+        except OSError:  # pragma: no cover - the reader reports it
+            total = None
+    return _ProgressReporter(total), None
 
 
 class _VersionAction(argparse.Action):
@@ -707,6 +809,26 @@ def _output_stream(
         return
 
     target = resolve_destination(destination)
+
+    # A character device, fifo or socket is not a file to be preserved or
+    # replaced. `--out /dev/null` is a legitimate way to discard output, and
+    # renaming a temporary file over /dev/null would destroy the device node
+    # -- so those destinations are written through directly, with no
+    # existence guard and no atomic commit.
+    if target.exists() and not target.is_file():
+        try:
+            handle = target.open("wb")
+        except OSError as exc:
+            msg = f"Could not write to {target}: {exc.strerror}"
+            raise KeyWriteError(msg) from exc
+        try:
+            yield handle, reported
+            handle.flush()
+        finally:
+            handle.close()
+        reported.append(str(target))
+        return
+
     if target.exists() and not force:
         msg = (
             f"{target} already exists. Pass --force to replace it; the "
@@ -761,12 +883,16 @@ def _cmd_encrypt(args: argparse.Namespace) -> int:
             reported,
         ),
     ):
+        reporter, _ = _make_progress(args, args.input)
         written = encrypt_stream(
             public_key,
             source,
             destination,
             segment_size=args.segment_size,
+            progress=reporter,
         )
+        if reporter is not None:
+            reporter.finish(written)
     where = reported[0] if reported else args.output
     _emit(
         args,
@@ -793,7 +919,12 @@ def _cmd_decrypt(args: argparse.Namespace) -> int:
                 reported,
             ),
         ):
-            written = decrypt_stream(private_key, source, destination)
+            reporter, _ = _make_progress(args, args.input)
+            written = decrypt_stream(
+                private_key, source, destination, progress=reporter
+            )
+            if reporter is not None:
+                reporter.finish(written)
         where = reported[0] if reported else args.output
         _emit(
             args,
@@ -932,6 +1063,14 @@ def _add_passphrase_flags(
 
 def _add_io_flags(parser: argparse.ArgumentParser, *, output: bool = True) -> None:
     """Add the shared ``--in``/``--out`` flags."""
+    parser.add_argument(
+        "--progress",
+        action="store_true",
+        help=(
+            "Report progress on stderr while streaming. Shows a percentage "
+            "and ETA when the input size is known. Suppressed by --quiet."
+        ),
+    )
     parser.add_argument(
         "--segment-size",
         type=int,

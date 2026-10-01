@@ -196,6 +196,22 @@ pg_dump mydb | encryption-helper encrypt --public-key backup.pub.pem > dump.enc
 
 With `--json`, the report moves to stderr so stdout stays pure.
 
+### Progress
+
+A multi-gigabyte operation with no output is indistinguishable from a hang:
+
+```console
+$ encryption-helper encrypt --public-key backup.pub.pem \
+    --in database.tar --out database.tar.enc --progress
+1.0 GiB   32.9%  ETA 3s  1.6 GiB/s
+3.1 GiB  100.0%  1.5 GiB/s  in 3s
+```
+
+Updates go to stderr, throttled to five per second, so stdout stays usable
+and the reporting costs nothing measurable. Reading from a pipe the total is
+unknown, so the percentage and ETA are omitted rather than guessed.
+`--quiet` suppresses it.
+
 ---
 
 ## Algorithms
@@ -276,6 +292,7 @@ world-readable.
 | `-q`, `--quiet` | Suppress non-error output |
 | `--log-level LEVEL` | Explicit level, overriding `-v`/`-q` |
 | `--json` | Machine-readable output |
+| `--progress` | Report progress on stderr while streaming |
 | `--segment-size BYTES` | Plaintext bytes per encrypted segment (default 256 KiB) |
 | `--max-size BYTES` | Refuse *buffered* input above this (default 64 MiB). File streaming is unbounded |
 
@@ -369,6 +386,7 @@ mistake. A key that *could* decrypt but does not match the container raises
 | Passphrase input | Prompted without echo, or from the environment or a file — never from `argv` |
 | Path handling | `~` is expanded and relative paths resolved |
 | Error text | Unexpected exception detail is logged, not printed |
+| Device destinations | `--out /dev/null` writes through directly; a temporary file is never renamed over a device node |
 
 ### Cryptographic choices
 

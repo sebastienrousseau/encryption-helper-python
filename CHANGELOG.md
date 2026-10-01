@@ -26,6 +26,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   streams by default and reads either mode, dispatching on the header, so a
   one-shot container produced by `encrypt()` still decrypts.
 - `--segment-size` to tune the segment, bounded to 4 KiB..64 MiB.
+- `--progress`, reporting bytes, percentage, rate and ETA on stderr while
+  streaming. Throttled to five updates a second: at 1.5 GB/s with 256 KiB
+  segments there are roughly 6,000 callbacks a second, and printing each
+  would cost more than the encryption. Measured overhead is nil. The total is
+  omitted when reading from a pipe rather than guessed, and `--quiet`
+  suppresses it. The library takes a callback and never prints, so `cli.py`
+  remains the only module that writes to a terminal.
 - The CLI commits streamed output atomically: it writes to a temporary file in
   the destination directory and renames on success, so a failed decryption
   never leaves a partial plaintext.
@@ -86,6 +93,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `--out /dev/null` failed with "already exists", and the atomic-commit path
+  would have renamed a temporary file over the device node. Character
+  devices, fifos and sockets are now written through directly, with no
+  existence guard and no rename. Found while testing `--progress` against a
+  discarded output.
 - `--json` with `--out -` interleaved a JSON report and binary output on one
   stream, leaving neither parseable. The report now moves to stderr when
   stdout carries the command's output. Previously documented as a known issue.
