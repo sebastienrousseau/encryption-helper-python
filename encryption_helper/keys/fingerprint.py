@@ -2,9 +2,14 @@
 # Copyright 2024-2026 HSBC Group Management Services Limited
 """Public key fingerprints.
 
-The fingerprints produced here are byte-identical to those printed by
-``ssh-keygen -lf``: the SHA-256 digest of the OpenSSH wire encoding of the
-public key, base64-encoded without padding and prefixed with ``SHA256:``.
+For key types OpenSSH understands -- RSA, Ed25519, Ed448 and ECDSA -- the
+fingerprint is byte-identical to ``ssh-keygen -lf``: the SHA-256 digest of the
+OpenSSH wire encoding, base64 without padding, prefixed ``SHA256:``.
+
+ML-KEM, ML-DSA and X25519 have no OpenSSH encoding, so those are fingerprinted
+over the DER SubjectPublicKeyInfo instead and carry a different prefix,
+``SHA256-SPKI:``. The prefixes differ deliberately: two fingerprints computed
+over different encodings must never look comparable.
 
 Fingerprints exist so a key can be identified, compared and logged without
 handling the key itself. The CLI reports one after generating a key pair,
@@ -21,7 +26,19 @@ from cryptography.hazmat.primitives.asymmetric.types import PublicKeyTypes
 from ..errors import UnsupportedAlgorithmError
 from .serialize import encode_public_key
 
-__all__ = ["fingerprint_sha256"]
+__all__ = ["OPENSSH_PREFIX", "SPKI_PREFIX", "fingerprint_sha256"]
+
+#: Prefix for fingerprints that match ``ssh-keygen -lf``.
+OPENSSH_PREFIX = "SHA256:"
+
+#: Prefix for fingerprints taken over DER SubjectPublicKeyInfo, used where no
+#: OpenSSH encoding exists.
+SPKI_PREFIX = "SHA256-SPKI:"
+
+
+def _digest(data: bytes) -> str:
+    """Base64 a SHA-256 digest, without padding."""
+    return base64.b64encode(hashlib.sha256(data).digest()).decode("ascii").rstrip("=")
 
 
 def fingerprint_sha256(key: PublicKeyTypes) -> str:
@@ -31,11 +48,12 @@ def fingerprint_sha256(key: PublicKeyTypes) -> str:
         key: Public key to fingerprint.
 
     Returns:
-        A string of the form ``SHA256:<base64>``, matching the output of
-        ``ssh-keygen -lf`` for the same key.
+        ``SHA256:<base64>`` for key types OpenSSH understands, matching
+        ``ssh-keygen -lf``; otherwise ``SHA256-SPKI:<base64>`` taken over the
+        DER SubjectPublicKeyInfo.
 
     Raises:
-        UnsupportedAlgorithmError: If the key type has no OpenSSH encoding.
+        UnsupportedAlgorithmError: If the key cannot be serialised at all.
 
     Example:
         >>> from encryption_helper.keys.generate import generate_ed25519
@@ -45,7 +63,12 @@ def fingerprint_sha256(key: PublicKeyTypes) -> str:
         >>> len(fp)
         50
     """
-    openssh = encode_public_key(key, fmt="openssh")
+    try:
+        openssh = encode_public_key(key, fmt="openssh")
+    except UnsupportedAlgorithmError:
+        # No OpenSSH encoding for this key type -- ML-KEM, ML-DSA and X25519.
+        # Fall back to SPKI under a distinct prefix.
+        return SPKI_PREFIX + _digest(encode_public_key(key, fmt="der"))
 
     # The OpenSSH public key line is "<type> <base64 blob> [comment]". The
     # fingerprint is taken over the decoded blob, not the whole line.
@@ -61,5 +84,4 @@ def fingerprint_sha256(key: PublicKeyTypes) -> str:
         msg = f"Could not decode the OpenSSH encoding of a {type(key).__name__}."
         raise UnsupportedAlgorithmError(msg) from exc
 
-    digest = hashlib.sha256(blob).digest()
-    return "SHA256:" + base64.b64encode(digest).decode("ascii").rstrip("=")
+    return OPENSSH_PREFIX + _digest(blob)

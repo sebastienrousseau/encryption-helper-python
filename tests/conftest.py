@@ -37,3 +37,43 @@ def ed25519_key() -> ed25519.Ed25519PrivateKey:
 def ecdsa_key() -> ec.EllipticCurvePrivateKey:
     """An ECDSA P-256 key, generated once for the whole session."""
     return generate_ecdsa(curve="p256")
+
+
+@pytest.fixture(scope="session")
+def ed448_key():
+    """An Ed448 key, generated once for the whole session."""
+    from encryption_helper.keys import generate_ed448
+
+    return generate_ed448()
+
+
+@pytest.fixture(scope="session")
+def x25519_key():
+    """An X25519 key for encryption, generated once for the whole session."""
+    from encryption_helper.keys import generate_x25519
+
+    return generate_x25519()
+
+
+@pytest.fixture(scope="session")
+def mlkem_key():
+    """An ML-KEM-768 key, generated once for the whole session."""
+    from encryption_helper.keys import generate_mlkem
+
+    return generate_mlkem(level=768)
+
+
+@pytest.fixture(scope="session")
+def mldsa_key():
+    """An ML-DSA-65 key, generated once for the whole session."""
+    from encryption_helper.keys import generate_mldsa
+
+    return generate_mldsa(level=65)
+
+
+@pytest.fixture(scope="session")
+def mlkem1024_key():
+    """An ML-KEM-1024 key, generated once for the whole session."""
+    from encryption_helper.keys import generate_mlkem
+
+    return generate_mlkem(level=1024)

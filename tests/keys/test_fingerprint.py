@@ -85,3 +85,53 @@ class TestFingerprintFailures:
         )
         with pytest.raises(Exception, match="Could not decode"):
             module.fingerprint_sha256(ed25519_key.public_key())
+
+
+class TestPostQuantumFingerprints:
+    """ML-KEM, ML-DSA, X25519 and Ed448 have no OpenSSH encoding, so they are
+    fingerprinted over DER SPKI under a distinct prefix. The prefixes must
+    differ: two digests over different encodings must never look comparable."""
+
+    @pytest.mark.parametrize("fixture", ["rsa_key", "ed25519_key", "ecdsa_key"])
+    def test_openssh_capable_keys_use_the_ssh_prefix(self, request, fixture):
+        from encryption_helper.keys.fingerprint import OPENSSH_PREFIX
+
+        key = request.getfixturevalue(fixture)
+        assert fingerprint_sha256(key.public_key()).startswith(OPENSSH_PREFIX)
+
+    @pytest.mark.parametrize(
+        "fixture", ["ed448_key", "x25519_key", "mlkem_key", "mldsa_key"]
+    )
+    def test_other_keys_use_the_spki_prefix(self, request, fixture):
+        from encryption_helper.keys.fingerprint import SPKI_PREFIX
+
+        key = request.getfixturevalue(fixture)
+        assert fingerprint_sha256(key.public_key()).startswith(SPKI_PREFIX)
+
+    def test_the_prefixes_are_not_confusable(self):
+        from encryption_helper.keys.fingerprint import OPENSSH_PREFIX, SPKI_PREFIX
+
+        assert OPENSSH_PREFIX != SPKI_PREFIX
+        assert not SPKI_PREFIX.startswith(OPENSSH_PREFIX.rstrip(":") + ":")
+
+    @pytest.mark.parametrize("fixture", ["mlkem_key", "mldsa_key", "x25519_key"])
+    def test_spki_fingerprint_is_the_digest_of_the_der(self, request, fixture):
+        """Independent recomputation, not a restatement of the implementation."""
+        from encryption_helper.keys import encode_public_key
+        from encryption_helper.keys.fingerprint import SPKI_PREFIX
+
+        public = request.getfixturevalue(fixture).public_key()
+        der = encode_public_key(public, fmt="der")
+        expected = base64.b64encode(hashlib.sha256(der).digest()).decode().rstrip("=")
+        assert fingerprint_sha256(public) == SPKI_PREFIX + expected
+
+    @pytest.mark.parametrize("fixture", ["mlkem_key", "mldsa_key"])
+    def test_deterministic_and_distinct(self, request, fixture):
+        from encryption_helper.keys import generate_mldsa, generate_mlkem
+
+        public = request.getfixturevalue(fixture).public_key()
+        assert fingerprint_sha256(public) == fingerprint_sha256(public)
+        other = (
+            generate_mlkem() if "kem" in fixture else generate_mldsa()
+        ).public_key()
+        assert fingerprint_sha256(public) != fingerprint_sha256(other)

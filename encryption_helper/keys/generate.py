@@ -15,9 +15,18 @@ be tested without touching a disk.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Final
 
-from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
+from cryptography.hazmat.primitives.asymmetric import (
+    ec,
+    ed448,
+    ed25519,
+    mldsa,
+    mlkem,
+    rsa,
+    x25519,
+)
 from cryptography.hazmat.primitives.asymmetric.types import PrivateKeyTypes
 
 from ..errors import InvalidArgumentError, KeyGenerationError, UnsupportedAlgorithmError
@@ -25,13 +34,25 @@ from ..errors import InvalidArgumentError, KeyGenerationError, UnsupportedAlgori
 __all__ = [
     "ALLOWED_RSA_KEY_SIZES",
     "DEFAULT_ALGORITHM",
+    "DEFAULT_MLDSA_LEVEL",
+    "DEFAULT_MLKEM_LEVEL",
     "DEFAULT_RSA_KEY_SIZE",
     "MIN_RSA_KEY_SIZE",
+    "POST_QUANTUM",
+    "QUANTUM_VULNERABLE",
     "SUPPORTED_ALGORITHMS",
+    "SUPPORTED_MLDSA_LEVELS",
+    "SUPPORTED_MLKEM_LEVELS",
+    "MLDSAPrivateKey",
+    "MLKEMPrivateKey",
     "generate",
     "generate_ecdsa",
+    "generate_ed448",
     "generate_ed25519",
+    "generate_mldsa",
+    "generate_mlkem",
     "generate_rsa",
+    "generate_x25519",
 ]
 
 #: Smallest RSA modulus this package will produce. Keys below 2048 bits are
@@ -60,8 +81,55 @@ SUPPORTED_CURVES: Final[dict[str, type[ec.EllipticCurve]]] = {
     "p521": ec.SECP521R1,
 }
 
+#: Any ML-KEM private key, whatever the parameter set.
+MLKEMPrivateKey = mlkem.MLKEM768PrivateKey | mlkem.MLKEM1024PrivateKey
+
+#: Any ML-DSA private key, whatever the parameter set.
+MLDSAPrivateKey = (
+    mldsa.MLDSA44PrivateKey | mldsa.MLDSA65PrivateKey | mldsa.MLDSA87PrivateKey
+)
+
+#: ML-KEM parameter sets (FIPS 203), by security level.
+SUPPORTED_MLKEM_LEVELS: Final[dict[int, Callable[[], MLKEMPrivateKey]]] = {
+    768: mlkem.MLKEM768PrivateKey.generate,
+    1024: mlkem.MLKEM1024PrivateKey.generate,
+}
+
+#: ML-DSA parameter sets (FIPS 204), by security level.
+SUPPORTED_MLDSA_LEVELS: Final[dict[int, Callable[[], MLDSAPrivateKey]]] = {
+    44: mldsa.MLDSA44PrivateKey.generate,
+    65: mldsa.MLDSA65PrivateKey.generate,
+    87: mldsa.MLDSA87PrivateKey.generate,
+}
+
+#: Default ML-KEM parameter set.
+DEFAULT_MLKEM_LEVEL: Final = 768
+
+#: Default ML-DSA parameter set.
+DEFAULT_MLDSA_LEVEL: Final = 65
+
 #: Algorithm identifiers accepted by :func:`generate`.
-SUPPORTED_ALGORITHMS: Final = ("rsa", "ed25519", "ecdsa")
+SUPPORTED_ALGORITHMS: Final = (
+    "rsa",
+    "ed25519",
+    "ed448",
+    "ecdsa",
+    "x25519",
+    "mlkem",
+    "mldsa",
+)
+
+#: Algorithms broken by a sufficiently large quantum computer.
+#:
+#: NIST IR 8547 deprecates 112-bit-security public-key algorithms (RSA-2048,
+#: P-256) from 2030 and disallows all of these from 2035. CNSA 2.0 is
+#: stricter still for national security systems. Keys generated today for
+#: long-lived credentials will outlive those dates, so :func:`generate`
+#: records which choices are affected and the CLI says so at generation time.
+QUANTUM_VULNERABLE: Final = frozenset({"rsa", "ecdsa", "ed25519", "ed448", "x25519"})
+
+#: Algorithms standardised for the post-quantum era.
+POST_QUANTUM: Final = frozenset({"mlkem", "mldsa"})
 
 #: Algorithm used when the caller does not choose one.
 DEFAULT_ALGORITHM: Final = "rsa"
@@ -183,11 +251,132 @@ def generate_ecdsa(*, curve: str = "p256") -> ec.EllipticCurvePrivateKey:
         raise KeyGenerationError(msg) from exc
 
 
+def generate_ed448() -> ed448.Ed448PrivateKey:
+    """Generate an Ed448 private key.
+
+    Ed448 targets a higher security level than Ed25519 at the cost of larger
+    keys and signatures. Like Ed25519 it cannot be used for encryption, and
+    like Ed25519 it is broken by a quantum computer -- see
+    :data:`QUANTUM_VULNERABLE`.
+
+    Returns:
+        The generated private key.
+
+    Raises:
+        KeyGenerationError: If the underlying backend fails.
+
+    Example:
+        >>> type(generate_ed448()).__name__
+        'Ed448PrivateKey'
+    """
+    try:
+        return ed448.Ed448PrivateKey.generate()
+    except Exception as exc:  # pragma: no cover - backend failure
+        msg = f"Ed448 key generation failed: {exc}"
+        raise KeyGenerationError(msg) from exc
+
+
+def generate_x25519() -> x25519.X25519PrivateKey:
+    """Generate an X25519 private key for encryption.
+
+    X25519 is a key-agreement algorithm, not a signature algorithm. This
+    package uses it for encryption in the standard ephemeral-static form: a
+    fresh ephemeral key agrees a secret with the recipient's static key, and
+    HKDF derives the content key from it. That is the same construction
+    ``age`` uses.
+
+    Returns:
+        The generated private key.
+
+    Raises:
+        KeyGenerationError: If the underlying backend fails.
+
+    Example:
+        >>> type(generate_x25519()).__name__
+        'X25519PrivateKey'
+    """
+    try:
+        return x25519.X25519PrivateKey.generate()
+    except Exception as exc:  # pragma: no cover - backend failure
+        msg = f"X25519 key generation failed: {exc}"
+        raise KeyGenerationError(msg) from exc
+
+
+def generate_mlkem(*, level: int = DEFAULT_MLKEM_LEVEL) -> MLKEMPrivateKey:
+    """Generate an ML-KEM private key for encryption (FIPS 203).
+
+    ML-KEM is a key-encapsulation mechanism believed secure against quantum
+    computers. It replaces RSA-OAEP and ECDH for the encryption path, and is
+    the algorithm NIST expects to carry that role past 2035.
+
+    Args:
+        level: Parameter set, 768 or 1024. 768 targets roughly AES-192
+            equivalent security and is the common default; 1024 targets
+            AES-256.
+
+    Returns:
+        The generated private key.
+
+    Raises:
+        UnsupportedAlgorithmError: If ``level`` is not a supported parameter
+            set.
+        KeyGenerationError: If the underlying backend fails.
+
+    Example:
+        >>> type(generate_mlkem(level=768)).__name__
+        'MLKEM768PrivateKey'
+    """
+    if level not in SUPPORTED_MLKEM_LEVELS:
+        supported = ", ".join(str(lvl) for lvl in sorted(SUPPORTED_MLKEM_LEVELS))
+        msg = f"Unsupported ML-KEM level {level}; choose one of: {supported}."
+        raise UnsupportedAlgorithmError(msg)
+    try:
+        return SUPPORTED_MLKEM_LEVELS[level]()
+    except Exception as exc:  # pragma: no cover - backend failure
+        msg = f"ML-KEM key generation failed: {exc}"
+        raise KeyGenerationError(msg) from exc
+
+
+def generate_mldsa(*, level: int = DEFAULT_MLDSA_LEVEL) -> MLDSAPrivateKey:
+    """Generate an ML-DSA private key for signing (FIPS 204).
+
+    ML-DSA is a lattice signature scheme believed secure against quantum
+    computers. It replaces Ed25519 and ECDSA for signing, and is the algorithm
+    NIST expects to carry that role past 2035.
+
+    Args:
+        level: Parameter set, 44, 65 or 87, in increasing security and size.
+            65 is the common default.
+
+    Returns:
+        The generated private key.
+
+    Raises:
+        UnsupportedAlgorithmError: If ``level`` is not a supported parameter
+            set.
+        KeyGenerationError: If the underlying backend fails.
+
+    Example:
+        >>> type(generate_mldsa(level=65)).__name__
+        'MLDSA65PrivateKey'
+    """
+    if level not in SUPPORTED_MLDSA_LEVELS:
+        supported = ", ".join(str(lvl) for lvl in sorted(SUPPORTED_MLDSA_LEVELS))
+        msg = f"Unsupported ML-DSA level {level}; choose one of: {supported}."
+        raise UnsupportedAlgorithmError(msg)
+    try:
+        return SUPPORTED_MLDSA_LEVELS[level]()
+    except Exception as exc:  # pragma: no cover - backend failure
+        msg = f"ML-DSA key generation failed: {exc}"
+        raise KeyGenerationError(msg) from exc
+
+
 def generate(
     algorithm: str = DEFAULT_ALGORITHM,
     *,
     key_size: int = DEFAULT_RSA_KEY_SIZE,
     curve: str = "p256",
+    level: int = 0,
 ) -> PrivateKeyTypes:
     """Generate a private key for the named algorithm.
 
@@ -199,6 +388,8 @@ def generate(
         algorithm: One of :data:`SUPPORTED_ALGORITHMS`.
         key_size: RSA modulus size. Ignored for other algorithms.
         curve: ECDSA curve name. Ignored for other algorithms.
+        level: ML-KEM or ML-DSA parameter set. Zero selects that algorithm's
+            default (768 for ML-KEM, 65 for ML-DSA). Ignored otherwise.
 
     Returns:
         The generated private key.
@@ -214,13 +405,18 @@ def generate(
         'Ed25519PrivateKey'
     """
     normalised = algorithm.strip().lower()
-    if normalised == "rsa":
-        return generate_rsa(key_size=key_size)
-    if normalised == "ed25519":
-        return generate_ed25519()
-    if normalised == "ecdsa":
-        return generate_ecdsa(curve=curve)
-
-    supported = ", ".join(SUPPORTED_ALGORITHMS)
-    msg = f"Unsupported algorithm {algorithm!r}; choose one of: {supported}."
-    raise UnsupportedAlgorithmError(msg)
+    builders: dict[str, Callable[[], PrivateKeyTypes]] = {
+        "rsa": lambda: generate_rsa(key_size=key_size),
+        "ed25519": generate_ed25519,
+        "ed448": generate_ed448,
+        "ecdsa": lambda: generate_ecdsa(curve=curve),
+        "x25519": generate_x25519,
+        "mlkem": lambda: generate_mlkem(level=level or DEFAULT_MLKEM_LEVEL),
+        "mldsa": lambda: generate_mldsa(level=level or DEFAULT_MLDSA_LEVEL),
+    }
+    builder = builders.get(normalised)
+    if builder is None:
+        supported = ", ".join(SUPPORTED_ALGORITHMS)
+        msg = f"Unsupported algorithm {algorithm!r}; choose one of: {supported}."
+        raise UnsupportedAlgorithmError(msg)
+    return builder()
