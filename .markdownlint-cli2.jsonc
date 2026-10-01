@@ -1,0 +1,12 @@
+{
+  // Markdown linting. Long lines and inline HTML are expected: the README
+  // uses centred HTML blocks for its header, and tables run wide.
+  "config": {
+    "default": true,
+    "MD013": false,
+    "MD033": false,
+    "MD041": false
+  },
+  "globs": ["**/*.md"],
+  "ignores": ["build/**", ".venv/**"]
+}

@@ -218,6 +218,25 @@ jobs:
             | grep -qx secret \
             || { echo "::error::encrypt/decrypt round trip failed"; exit 1; }
           echo "Wheel smoke test passed."
+      # SBOM for the built distribution. Listed in the original plan and
+      # never implemented until now; pip-audit, Scorecard and build
+      # attestation were present, this was not.
+      - name: Generate CycloneDX SBOM
+        run: |
+          python -m pip install --quiet cyclonedx-bom
+          python -m cyclonedx_py environment \
+            --output-format JSON \
+            --output-file dist/encryption-helper.cdx.json
+          python - <<'PY'
+          import json
+          with open("dist/encryption-helper.cdx.json", encoding="utf-8") as handle:
+              sbom = json.load(handle)
+          components = sbom.get("components", [])
+          names = {c["name"] for c in components}
+          if "cryptography" not in names:
+              raise SystemExit("SBOM does not list the cryptography dependency")
+          print(f"SBOM lists {len(components)} components")
+          PY
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: distribution

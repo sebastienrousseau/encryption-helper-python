@@ -52,8 +52,24 @@ class TestPublicAPI:
     def test_everything_exported_exists(self, name):
         assert hasattr(encryption_helper, name)
 
-    def test_all_is_sorted(self):
-        assert list(encryption_helper.__all__) == sorted(encryption_helper.__all__)
+    def test_all_has_no_duplicates(self):
+        """Ordering is ruff's job (RUF022, isort-style: constants, then
+        classes, then functions). Asserting plain `sorted()` here contradicted
+        it, so this checks the property ruff does not: no duplicates."""
+        assert len(encryption_helper.__all__) == len(set(encryption_helper.__all__))
+
+    def test_all_covers_every_public_name(self):
+        """Nothing public is missing from __all__."""
+        public = {
+            name
+            for name in vars(encryption_helper)
+            if not name.startswith("_") and name != "annotations"
+        }
+        # Submodules are reachable but are not part of the curated surface.
+        public -= {"crypto", "errors", "keys", "cli", "logging", "metadata"}
+        assert public <= set(encryption_helper.__all__), sorted(
+            public - set(encryption_helper.__all__)
+        )
 
     def test_no_legacy_names_survive(self):
         """The removed API must be gone, not quietly still importable."""

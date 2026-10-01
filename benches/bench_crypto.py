@@ -34,7 +34,10 @@ from encryption_helper import (
     fingerprint_sha256,
     generate_ecdsa,
     generate_ed25519,
+    generate_mldsa,
+    generate_mlkem,
     generate_rsa,
+    generate_x25519,
     load_private_key,
     sign,
     verify,
@@ -73,6 +76,14 @@ def build_cases(quick: bool) -> list[tuple[str, Callable[[], Any], int]]:
     ed = generate_ed25519()
     ec = generate_ecdsa(curve="p256")
     public = rsa2048.public_key()
+
+    # Post-quantum. These are the algorithms NIST permits past 2035, so their
+    # cost relative to the classical ones is the interesting number.
+    kem = generate_mlkem(level=768)
+    kem_public = kem.public_key()
+    dsa = generate_mldsa(level=65)
+    xk = generate_x25519()
+    x_public = xk.public_key()
 
     small = b"a database password"
     medium = b"x" * (64 * 1024)
@@ -114,6 +125,37 @@ def build_cases(quick: bool) -> list[tuple[str, Callable[[], Any], int]]:
         ("decrypt 19 B", lambda: decrypt(rsa2048, small_blob), max(5, 100 // scale)),
         ("decrypt 64 KiB", lambda: decrypt(rsa2048, medium_blob), max(5, 60 // scale)),
         ("decrypt 1 MiB", lambda: decrypt(rsa2048, large_blob), max(3, 20 // scale)),
+        # Post-quantum encryption. ML-KEM encapsulation is fast; the
+        # ciphertext overhead (1088 B vs RSA's 256 B) is the real cost.
+        ("keygen mlkem-768", lambda: generate_mlkem(level=768), max(5, 100 // scale)),
+        (
+            "keygen mlkem-1024",
+            lambda: generate_mlkem(level=1024),
+            max(5, 100 // scale),
+        ),
+        ("keygen mldsa-65", lambda: generate_mldsa(level=65), max(5, 100 // scale)),
+        ("keygen x25519", generate_x25519, max(5, 200 // scale)),
+        (
+            "encrypt mlkem 64KiB",
+            lambda: encrypt(kem_public, medium),
+            max(5, 60 // scale),
+        ),
+        (
+            "decrypt mlkem 64KiB",
+            lambda: decrypt(kem, encrypt(kem_public, medium)),
+            max(3, 30 // scale),
+        ),
+        (
+            "encrypt x25519 64KiB",
+            lambda: encrypt(x_public, medium),
+            max(5, 60 // scale),
+        ),
+        ("sign mldsa-65", lambda: sign(dsa, medium), max(5, 60 // scale)),
+        (
+            "verify mldsa-65",
+            lambda: verify(dsa.public_key(), sign(dsa, medium), medium),
+            max(3, 30 // scale),
+        ),
         # Signatures over 64 KiB.
         ("sign rsa-pss", lambda: sign(rsa2048, medium), max(5, 100 // scale)),
         ("sign ed25519", lambda: sign(ed, medium), max(5, 200 // scale)),

@@ -880,19 +880,19 @@ class TestStdoutOutput:
         )
         assert capsysbinary.readouterr().out == b"payload"
 
-    def test_json_and_stdout_output_share_the_stream(
+    def test_json_report_does_not_pollute_binary_stdout(
         self, tmp_path, keypair, capsysbinary
     ):
-        """Documents a known wart, so a future fix is a deliberate change.
+        """`--json` with `--out -` used to interleave JSON and ciphertext.
 
-        `--json` writes its report to stdout and `--out -` writes ciphertext
-        to stdout, so combining them interleaves binary and JSON on one
-        stream. The JSON is still emitted, but a consumer piping to `jq` gets
-        garbage. Tracked as a post-0.0.2 finding; the workaround is to use
-        `--out FILE` with `--json`.
+        Both went to stdout, leaving neither parseable. The report now moves
+        to stderr when stdout is carrying the command's output, so a consumer
+        can pipe ciphertext and still read the report.
         """
         _, public = keypair
         (tmp_path / "m.txt").write_bytes(b"payload")
+        capsysbinary.readouterr()
+
         main(
             [
                 "--json",
@@ -905,12 +905,11 @@ class TestStdoutOutput:
                 "-",
             ]
         )
-        raw = capsysbinary.readouterr().out
-        assert raw.startswith(b"EHEV"), "ciphertext missing"
-        # The report is the trailing object; a `{` byte can occur anywhere in
-        # the ciphertext, so search from the end rather than the start.
-        payload = json.loads(raw[raw.rindex(b"{") :].decode())
-        assert payload["output"] == "<stdout>"
+        captured = capsysbinary.readouterr()
+        assert captured.out.startswith(b"EHEV")
+        err = captured.err.decode()
+        payload = json.loads(err[err.index("{") :])
+        assert payload["bytes"] == len(captured.out)
 
 
 class TestExplicitPassphraseWhenLoading:

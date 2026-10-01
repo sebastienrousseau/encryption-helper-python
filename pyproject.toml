@@ -42,7 +42,10 @@ classifiers = [
     "Topic :: Utilities",
     "Typing :: Typed",
 ]
-dependencies = ["cryptography>=43.0.0"]
+# ML-KEM (FIPS 203) and ML-DSA (FIPS 204) require cryptography 46 or
+# newer. The upper bound keeps a major release from landing untested;
+# Renovate raises it deliberately rather than by accident.
+dependencies = ["cryptography>=46.0.0,<51.0.0"]
 
 [project.urls]
 Homepage = "https://github.com/hsbc/encryption-helper-python"
