@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import os
 import struct
+from collections.abc import Callable
 from typing import IO, Final
 
 from cryptography.exceptions import InvalidTag
@@ -67,10 +68,18 @@ from .envelope import (
     _kem_for_public_key,
 )
 
+#: Called with the cumulative plaintext byte count after each segment.
+#:
+#: The library never prints. A caller that wants progress supplies a callback
+#: and owns the presentation, which keeps `cli.py` the only module that writes
+#: to a terminal.
+ProgressCallback = Callable[[int], None]
+
 __all__ = [
     "DEFAULT_SEGMENT_SIZE",
     "MAX_SEGMENT_SIZE",
     "MIN_SEGMENT_SIZE",
+    "ProgressCallback",
     "decrypt_stream",
     "encrypt_stream",
 ]
@@ -138,13 +147,14 @@ def _validate_segment_size(segment_size: int) -> None:
         raise InvalidArgumentError(msg)
 
 
-def encrypt_stream(
+def encrypt_stream(  # noqa: PLR0913 - three of six are keyword-only options
     public_key: PublicKeyTypes,
     source: IO[bytes],
     destination: IO[bytes],
     *,
     associated_data: bytes = b"",
     segment_size: int = DEFAULT_SEGMENT_SIZE,
+    progress: ProgressCallback | None = None,
 ) -> int:
     """Encrypt ``source`` into ``destination`` in bounded memory.
 
@@ -155,6 +165,9 @@ def encrypt_stream(
         associated_data: Optional context to authenticate but not encrypt.
             The same value must be given to :func:`decrypt_stream`.
         segment_size: Plaintext bytes per segment.
+        progress: Optional callback invoked with the cumulative plaintext byte
+            count after each segment. Throttling and formatting are the
+            caller's concern.
 
     Returns:
         The number of plaintext bytes read.
@@ -204,6 +217,8 @@ def encrypt_stream(
             aead.encrypt(_segment_nonce(prefix, number, final=final), current, aad)
         )
         total += len(current)
+        if progress is not None:
+            progress(total)
         if final:
             break
         current = following
@@ -284,6 +299,7 @@ def decrypt_stream(
     destination: IO[bytes],
     *,
     associated_data: bytes = b"",
+    progress: ProgressCallback | None = None,
 ) -> int:
     """Decrypt a streaming container into ``destination`` in bounded memory.
 
@@ -299,6 +315,8 @@ def decrypt_stream(
         source: Readable binary stream positioned at the container start.
         destination: Writable binary stream.
         associated_data: The same value given to :func:`encrypt_stream`.
+        progress: Optional callback invoked with the cumulative plaintext byte
+            count after each authenticated segment.
 
     Returns:
         The number of plaintext bytes written.
@@ -354,6 +372,8 @@ def decrypt_stream(
             raise DecryptionError(msg) from exc
         destination.write(plaintext)
         total += len(plaintext)
+        if progress is not None:
+            progress(total)
         if final:
             break
         current = following

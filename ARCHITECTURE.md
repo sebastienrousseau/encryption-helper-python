@@ -140,6 +140,11 @@ Truncation resistance is what a naive chunked AEAD loses. Each segment is
 individually authenticated, so forging one is infeasible, but without a final
 marker an attacker can simply stop and the recipient cannot tell.
 
+Progress is reported by callback, not by printing: the streaming functions
+accept a `ProgressCallback` and invoke it with a cumulative byte count. The
+CLI owns throttling and formatting, so `cli.py` remains the only module that
+writes to a terminal.
+
 `decrypt_stream` writes each segment only after its tag verifies, but earlier
 segments are already written when a later one fails. The CLI therefore writes
 to a temporary file in the destination directory and renames on success, so a
