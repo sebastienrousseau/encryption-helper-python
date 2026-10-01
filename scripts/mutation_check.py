@@ -24,6 +24,11 @@ report names the property, not a line number.
 A surviving mutation is a real finding: it means a security property is
 asserted nowhere.
 
+Mutations are never applied to the working tree. The tree is copied to a
+temporary directory first and patched there, so uncommitted work can be
+checked, an interrupted run cannot leave a mutated file behind, and two
+runs cannot interfere with each other.
+
 Usage:
     scripts/mutation_check.py              # all mutations
     scripts/mutation_check.py --list      # show them without running
@@ -33,9 +38,14 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -281,8 +291,54 @@ def apply(root: Path, mutation: Mutation) -> str:
     return original
 
 
+#: Directories that must not be copied: version control, virtual
+#: environments, build output and tool caches. Copying `.git` alone would
+#: dominate the runtime.
+_EXCLUDED = shutil.ignore_patterns(
+    ".git",
+    ".venv",
+    "venv",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".hypothesis",
+    "__pycache__",
+    "build",
+    "dist",
+    "*.egg-info",
+    ".coverage*",
+    "htmlcov",
+)
+
+
+@contextmanager
+def worktree_copy(root: Path) -> Iterator[Path]:
+    """Yield a disposable copy of the working tree.
+
+    Mutating the real tree would make the harness unusable on uncommitted
+    work -- which is exactly when a developer wants to run it -- and would
+    leave a patched file behind if the process were killed between ``apply``
+    and the restore. Copying sidesteps both: the original is never written to.
+
+    The copy includes uncommitted changes, because those are what the
+    developer is asking about.
+    """
+    with tempfile.TemporaryDirectory(prefix="eh-mutation-") as tmp:
+        copy = Path(tmp) / root.name
+        shutil.copytree(root, copy, ignore=_EXCLUDED, symlinks=True)
+        yield copy
+
+
 def _pytest(root: Path, selection: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
-    """Run pytest over ``selection`` and return the completed process."""
+    """Run pytest over ``selection`` inside ``root``.
+
+    ``PYTHONPATH`` is set so the copy's ``encryption_helper`` package is
+    imported in preference to any installed or editable copy. Without it an
+    editable install would shadow the mutated source and every mutation would
+    appear to survive.
+    """
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(root)
     return subprocess.run(  # noqa: S603
         [
             sys.executable,
@@ -297,10 +353,44 @@ def _pytest(root: Path, selection: tuple[str, ...]) -> subprocess.CompletedProce
             *selection,
         ],
         cwd=root,
+        env=env,
         capture_output=True,
         text=True,
         check=False,
     )
+
+
+def verify_provenance(copy: Path) -> str | None:
+    """Confirm the tests will import the copy, not the installed package.
+
+    If an installed package shadowed the copy, every mutation would survive
+    and the report would blame the test suite for a harness fault. Fail with
+    the real reason instead.
+
+    Returns:
+        An error description, or None if the copy is what gets imported.
+    """
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(copy)
+    probe = subprocess.run(
+        [sys.executable, "-c", "import encryption_helper as m; print(m.__file__)"],
+        cwd=copy,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if probe.returncode != 0:
+        return (
+            f"could not import encryption_helper from the copy: {probe.stderr.strip()}"
+        )
+    resolved = Path(probe.stdout.strip()).resolve()
+    if copy.resolve() not in resolved.parents:
+        return (
+            f"the tests would import {resolved}, which is outside the copy at "
+            f"{copy}. A mutation there would have no effect."
+        )
+    return None
 
 
 def verify_baseline(root: Path, mutations: list[Mutation]) -> str | None:
@@ -333,24 +423,18 @@ def run_tests(root: Path, mutation: Mutation) -> bool:
 
 
 def preflight(root: Path, selected: list[Mutation]) -> int:
-    """Refuse to run unless the tree is clean and the baseline passes.
+    """Refuse to run unless the copy is importable and the baseline passes.
 
     Returns:
         0 to proceed, or a non-zero exit code.
     """
-    dirt = subprocess.run(  # noqa: S603
-        ["git", "-C", str(root), "status", "--porcelain"],  # noqa: S607
-        capture_output=True,
-        text=True,
-        check=False,
-    ).stdout
-    if dirt.strip():
-        print(
-            "error: working tree is not clean; refusing to patch files.",
-            file=sys.stderr,
-        )
-        print(dirt, file=sys.stderr)
+    print("verifying the copy is what gets imported ... ", end="", flush=True)
+    shadowed = verify_provenance(root)
+    if shadowed is not None:
+        print("FAILED")
+        print(f"error: {shadowed}", file=sys.stderr)
         return 2
+    print("ok")
 
     print("verifying the baseline passes ... ", end="", flush=True)
     problem = verify_baseline(root, selected)
@@ -390,6 +474,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {m.id:24} {m.property}")
         return 0
 
+    with worktree_copy(root) as copy:
+        return _run(copy, selected)
+
+
+def _run(root: Path, selected: list[Mutation]) -> int:
+    """Apply every mutation inside ``root`` and report the score."""
     status = preflight(root, selected)
     if status:
         return status

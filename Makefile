@@ -5,7 +5,16 @@
 
 .POSIX:
 .DEFAULT_GOAL := help
-PY := poetry run
+
+# Tool invocation prefix. Defaults to `poetry run` where Poetry is installed
+# and to the active environment otherwise, so the gate works for contributors
+# using pip, venv or uv as well. Override explicitly if needed:
+#
+#   make PY= check            run against whatever is on PATH
+#   make PY="uv run" check     run through uv
+#
+PY := $(shell command -v poetry >/dev/null 2>&1 && printf '%s' 'poetry run')
+PYTHON := $(shell command -v python >/dev/null 2>&1 && printf '%s' python || printf '%s' python3)
 
 .PHONY: help
 help: ## Show this help
@@ -44,32 +53,32 @@ security: ## Static security scan
 
 .PHONY: mutation
 mutation: ## Verify the tests detect broken security properties
-	$(PY) python scripts/mutation_check.py
+	$(PY) $(PYTHON) scripts/mutation_check.py
 
 .PHONY: fuzz
 fuzz: ## Fuzz the parsers (no engine required)
-	cd fuzz && $(PY) python run_fuzz.py --iterations 50000
+	cd fuzz && $(PY) $(PYTHON) run_fuzz.py --iterations 50000
 
 .PHONY: bench
 bench: ## Indicative benchmarks, not a gate
-	$(PY) python benches/bench_crypto.py --quick
+	$(PY) $(PYTHON) benches/bench_crypto.py --quick
 
 .PHONY: examples
 examples: ## Run every example
-	@for f in examples/*.py; do echo "--- $$f"; $(PY) python "$$f" || exit 1; done
+	@for f in examples/*.py; do echo "--- $$f"; $(PY) $(PYTHON) "$$f" || exit 1; done
 
 .PHONY: sbom
 sbom: ## Generate a CycloneDX SBOM
 	@# Installed on demand rather than declared as a dev dependency: its own
 	@# Python constraint is narrower than this project's floor.
 	mkdir -p dist
-	$(PY) pip install --quiet cyclonedx-bom
-	$(PY) python -m cyclonedx_py environment \
+	$(PY) $(PYTHON) -m pip install --quiet cyclonedx-bom
+	$(PY) $(PYTHON) -m cyclonedx_py environment \
 		--output-format JSON --output-file dist/encryption-helper.cdx.json
 
 .PHONY: build
 build: ## Build sdist and wheel, then validate
-	$(PY) python -m build
+	$(PY) $(PYTHON) -m build
 	$(PY) twine check --strict dist/*
 
 .PHONY: verify
