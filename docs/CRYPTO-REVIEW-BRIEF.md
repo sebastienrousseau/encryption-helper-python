@@ -22,7 +22,12 @@ filesystem work, covered by the test suite and not cryptographic.
 ### 1.1 Content-key derivation and KEM binding — `crypto/envelope.py`
 
 ```python
-HKDF(algorithm=SHA256, length=32, salt=None, info=b"encryption-helper/v1 content-key" + bytes([kem_id]))
+HKDF(
+    algorithm=SHA256,
+    length=32,
+    salt=None,
+    info=b"encryption-helper/v1 content-key" + bytes([kem_id]),
+)
 ```
 
 - `salt=None` means HKDF-Extract runs with a zero salt. The input is a KEM
