@@ -69,7 +69,12 @@ MUTATIONS: tuple[Mutation, ...] = (
         path="encryption_helper/_io.py",
         old="SECRET_FILE_MODE = 0o600",
         new="SECRET_FILE_MODE = 0o644",
-        tests=("tests/test_io.py", "tests/keys/test_store.py"),
+        tests=(
+            "tests/test_io.py",
+            "tests/keys/test_store.py",
+            "tests/test_cli.py",
+            "tests/test_security_regressions.py",
+        ),
     ),
     Mutation(
         id="io-symlink",
@@ -87,7 +92,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         # final commit path via the preceding tmp_path.unlink().
         old="            tmp_path.unlink()\n        if backup is not None and backup_mode is not None:\n            _restore(backup, target, backup_mode)",
         new="            tmp_path.unlink()",
-        tests=("tests/test_release_candidate.py",),
+        tests=("tests/test_io.py", "tests/test_release_candidate.py"),
     ),
     Mutation(
         id="io-exclusive",
@@ -129,7 +134,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         path="encryption_helper/crypto/envelope.py",
         old="        info=_HKDF_INFO + bytes([kem_id]),",
         new="        info=_HKDF_INFO,",
-        tests=("tests/crypto/test_envelope.py",),
+        tests=("tests/crypto/test_defence_in_depth.py",),
     ),
     Mutation(
         id="envelope-magic",
@@ -153,7 +158,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         path="encryption_helper/crypto/envelope.py",
         old="    return header + encapsulation + nonce + extra",
         new="    return extra",
-        tests=("tests/crypto/test_envelope.py",),
+        tests=("tests/crypto/test_defence_in_depth.py",),
     ),
     Mutation(
         id="envelope-keylen",
@@ -186,7 +191,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         path="encryption_helper/crypto/streaming.py",
         old="    prefix = os.urandom(_PREFIX_SIZE)",
         new="    prefix = bytes(_PREFIX_SIZE)",
-        tests=("tests/crypto/test_streaming.py",),
+        tests=("tests/crypto/test_defence_in_depth.py",),
     ),
     Mutation(
         id="stream-segment-bounds",
