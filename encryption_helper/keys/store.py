@@ -187,18 +187,8 @@ def _validate_pair(
         raise KeyPairValidationError(msg)
 
 
-def _preflight(private_path: Path, public_path: Path, *, overwrite: bool) -> None:
-    """Reject an impossible or destructive write before touching the disk.
-
-    Checks aliasing rather than just path equality: two different names can
-    refer to the same file through a hard link, in which case writing the pair
-    would leave only whichever half was written last.
-
-    Raises:
-        KeyExistsError: If a destination exists and ``overwrite`` is false.
-        KeyWriteError: If the two paths alias each other, a destination is a
-            directory, or a destination is a hard link to something else.
-    """
+def _reject_identical_paths(private_path: Path, public_path: Path) -> None:
+    """Refuse a pair that would write both halves to one name."""
     if private_path == public_path:
         msg = (
             f"The private and public key would both be written to "
@@ -206,32 +196,43 @@ def _preflight(private_path: Path, public_path: Path, *, overwrite: bool) -> Non
         )
         raise KeyWriteError(msg)
 
-    for path in (private_path, public_path):
+
+def _reject_directory_destinations(*paths: Path) -> None:
+    """Refuse a destination that is an existing directory."""
+    for path in paths:
         if path.is_dir():
             msg = f"{path} is a directory, not a file."
             raise KeyWriteError(msg)
 
-    if private_path.exists() and public_path.exists():
-        try:
-            aliased = private_path.samefile(public_path)
-        except OSError:  # pragma: no cover - raced away between checks
-            aliased = False
-        if aliased:
-            msg = (
-                f"{private_path} and {public_path} are the same file (a hard "
-                "or symbolic link). Writing the pair would leave only one "
-                "half. Remove the link or choose a different destination."
-            )
-            raise KeyWriteError(msg)
 
-    # A private key destination with more than one link means the bytes are
-    # reachable under another name we know nothing about. Replacing it here
-    # would leave the old key live at that other path.
-    _reject_aliased_private_key(private_path)
+def _reject_aliased_pair(private_path: Path, public_path: Path) -> None:
+    """Refuse two names that resolve to the same file.
 
+    Equal paths are caught by :func:`_reject_identical_paths`; this catches
+    distinct names joined by a hard or symbolic link, where writing the pair
+    would leave only whichever half went last.
+    """
+    if not (private_path.exists() and public_path.exists()):
+        return
+    try:
+        aliased = private_path.samefile(public_path)
+    except OSError:  # pragma: no cover - raced away between checks
+        aliased = False
+    if aliased:
+        msg = (
+            f"{private_path} and {public_path} are the same file (a hard "
+            "or symbolic link). Writing the pair would leave only one "
+            "half. Remove the link or choose a different destination."
+        )
+        raise KeyWriteError(msg)
+
+
+def _reject_existing_pair(
+    private_path: Path, public_path: Path, *, overwrite: bool
+) -> None:
+    """Refuse to replace existing key files unless explicitly told to."""
     if overwrite:
         return
-
     existing = [str(p) for p in (private_path, public_path) if p.exists()]
     if existing:
         msg = (
@@ -241,6 +242,28 @@ def _preflight(private_path: Path, public_path: Path, *, overwrite: bool) -> Non
             "replace them; the existing files will be backed up first."
         )
         raise KeyExistsError(msg)
+
+
+def _preflight(private_path: Path, public_path: Path, *, overwrite: bool) -> None:
+    """Reject an impossible or destructive write before touching the disk.
+
+    Each guard is a separate function so it can be tested in isolation; this
+    function fixes only their order, which matters -- the clearest diagnostic
+    should win when a destination violates more than one rule.
+
+    Raises:
+        KeyExistsError: If a destination exists and ``overwrite`` is false.
+        KeyWriteError: If the two paths alias each other, a destination is a
+            directory, or a destination is a hard link to something else.
+    """
+    _reject_identical_paths(private_path, public_path)
+    _reject_directory_destinations(private_path, public_path)
+    _reject_aliased_pair(private_path, public_path)
+    # A private key destination with more than one link means the bytes are
+    # reachable under another name we know nothing about. Replacing it here
+    # would leave the old key live at that other path.
+    _reject_aliased_private_key(private_path)
+    _reject_existing_pair(private_path, public_path, overwrite=overwrite)
 
 
 def _reject_aliased_private_key(private_path: Path) -> None:

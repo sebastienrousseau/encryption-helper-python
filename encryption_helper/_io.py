@@ -121,7 +121,34 @@ def _timestamp() -> str:
     return datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
-def _backup(path: Path) -> tuple[Path, int]:
+class _Displaced(NamedTuple):
+    """A file moved aside to make room for its replacement.
+
+    Bundling the backup path with the mode it had removes the recurring
+    ``backup is not None and backup_mode is not None`` guard: there is one
+    object, and it either exists or it does not.
+    """
+
+    backup: Path
+    target: Path
+    mode: int
+
+    def restore(self) -> None:
+        """Put the file back where it came from, mode and all.
+
+        Called when a write fails after its predecessor was displaced. Failure
+        is swallowed: a failed rollback must not mask the error that triggered
+        it.
+        """
+        try:
+            self.backup.replace(self.target)
+            if not _WINDOWS:
+                self.target.chmod(self.mode)
+        except OSError:  # pragma: no cover - best effort during failure handling
+            pass
+
+
+def _displace(path: Path) -> _Displaced:
     """Move ``path`` aside to a timestamped sibling.
 
     The backup keeps the *original* file's permission bits, not the bits of
@@ -132,7 +159,7 @@ def _backup(path: Path) -> tuple[Path, int]:
         path: Existing file to preserve.
 
     Returns:
-        A ``(backup_path, original_mode)`` pair.
+        The :class:`_Displaced` record needed to undo the move.
 
     Raises:
         KeyWriteError: If the backup could not be created.
@@ -154,21 +181,7 @@ def _backup(path: Path) -> tuple[Path, int]:
     except OSError as exc:
         msg = f"Could not back up the existing file at {path}: {exc.strerror}"
         raise KeyWriteError(msg) from exc
-    return backup, original_mode
-
-
-def _restore(backup: Path, target: Path, mode: int) -> None:
-    """Put a backup back where it came from, mode and all.
-
-    Used when a write fails after its backup was taken. Failure is swallowed:
-    it must not mask the error that triggered the restore.
-    """
-    try:
-        backup.replace(target)
-        if not _WINDOWS:
-            target.chmod(mode)
-    except OSError:  # pragma: no cover - best effort during failure handling
-        pass
+    return _Displaced(backup=backup, target=path, mode=original_mode)
 
 
 def _reject_symlink(path: Path) -> None:
@@ -239,27 +252,69 @@ def secure_write_bytes(
     """
     target = resolve_destination(path)
     _reject_symlink(target)
+    replaced = _reject_existing_destination(target, overwrite=overwrite)
 
-    backup: Path | None = None
-    backup_mode: int | None = None
-    replaced = target.exists()
-    if replaced:
-        if not overwrite:
-            msg = (
-                f"{target} already exists. Refusing to overwrite it, because "
-                "replacing key material cannot be undone. Pass overwrite=True "
-                "(or --force on the command line) to replace it; the existing "
-                "file will be backed up first."
-            )
-            raise KeyExistsError(msg)
-        backup, backup_mode = _backup(target)
+    displaced = _displace(target) if replaced else None
+    try:
+        _write_atomically(target, data, mode=mode, dir_mode=dir_mode)
+    except KeyWriteError:
+        # The displaced file is the only copy of the old contents, and the
+        # destination is currently empty. Put it back before reporting, or a
+        # failed replacement leaves no file where one used to be.
+        if displaced is not None:
+            displaced.restore()
+        raise
 
+    return _outcome(target, displaced, replaced=replaced)
+
+
+def _reject_existing_destination(target: Path, *, overwrite: bool) -> bool:
+    """Report whether ``target`` exists, refusing to clobber it unless told to.
+
+    Args:
+        target: Destination being written to.
+        overwrite: Whether replacing an existing file is permitted.
+
+    Returns:
+        Whether a file is already present at ``target``.
+
+    Raises:
+        KeyExistsError: If ``target`` exists and ``overwrite`` is false.
+    """
+    if not target.exists():
+        return False
+    if not overwrite:
+        msg = (
+            f"{target} already exists. Refusing to overwrite it, because "
+            "replacing key material cannot be undone. Pass overwrite=True "
+            "(or --force on the command line) to replace it; the existing "
+            "file will be backed up first."
+        )
+        raise KeyExistsError(msg)
+    return True
+
+
+def _write_atomically(target: Path, data: bytes, *, mode: int, dir_mode: int) -> None:
+    """Write ``data`` to ``target`` via a temporary file in the same directory.
+
+    Creating the temporary alongside the target keeps the final step a rename
+    within one filesystem, which is atomic. A crash therefore leaves either the
+    old file or the new one, never a half-written key.
+
+    Args:
+        target: Final destination.
+        data: Bytes to write.
+        mode: Permission bits for the resulting file.
+        dir_mode: Permission bits for any parent directories created.
+
+    Raises:
+        KeyWriteError: If the directory, the temporary file, or the write
+            itself fails. The temporary is removed on failure.
+    """
     parent = target.parent
     try:
         parent.mkdir(parents=True, exist_ok=True, mode=dir_mode)
     except OSError as exc:
-        if backup is not None and backup_mode is not None:
-            _restore(backup, target, backup_mode)
         msg = f"Could not create directory {parent}: {exc.strerror}"
         raise KeyWriteError(msg) from exc
 
@@ -268,11 +323,6 @@ def secure_write_bytes(
             prefix=f".{target.name}.", suffix=".tmp", dir=parent
         )
     except OSError as exc:
-        # The backup was already taken, so the destination is currently empty.
-        # Put it back before reporting, or a failed replacement would leave no
-        # file where one used to be.
-        if backup is not None and backup_mode is not None:
-            _restore(backup, target, backup_mode)
         msg = f"Could not write to {target}: {exc.strerror}"
         raise KeyWriteError(msg) from exc
 
@@ -289,13 +339,21 @@ def secure_write_bytes(
     except OSError as exc:
         with contextlib.suppress(OSError):
             tmp_path.unlink()
-        if backup is not None and backup_mode is not None:
-            _restore(backup, target, backup_mode)
         msg = f"Could not write to {target}: {exc.strerror}"
         raise KeyWriteError(msg) from exc
 
+
+def _outcome(
+    target: Path, displaced: _Displaced | None, *, replaced: bool
+) -> WriteOutcome:
+    """Build the public result from the internal displacement record."""
+    if displaced is None:
+        return WriteOutcome(path=target, backup=None, replaced=replaced)
     return WriteOutcome(
-        path=target, backup=backup, replaced=replaced, backup_mode=backup_mode
+        path=target,
+        backup=displaced.backup,
+        replaced=replaced,
+        backup_mode=displaced.mode,
     )
 
 

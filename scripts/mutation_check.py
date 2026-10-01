@@ -88,18 +88,17 @@ MUTATIONS: tuple[Mutation, ...] = (
         id="io-restore",
         property="a write that fails after displacing a file restores it",
         path="encryption_helper/_io.py",
-        # Three call sites restore a displaced file; this anchors to the
-        # final commit path via the preceding tmp_path.unlink().
-        old="            tmp_path.unlink()\n        if backup is not None and backup_mode is not None:\n            _restore(backup, target, backup_mode)",
-        new="            tmp_path.unlink()",
+        # One rollback site now, reached by every failing write stage.
+        old="        if displaced is not None:\n            displaced.restore()",
+        new="        if displaced is not None:\n            pass",
         tests=("tests/test_io.py", "tests/test_release_candidate.py"),
     ),
     Mutation(
         id="io-exclusive",
         property="an existing destination is not silently replaced",
         path="encryption_helper/_io.py",
-        old="        if not overwrite:",
-        new="        if False:",
+        old="    if not overwrite:",
+        new="    if False:",
         tests=("tests/test_io.py", "tests/keys/test_store.py"),
     ),
     # --- pair transaction -------------------------------------------------
