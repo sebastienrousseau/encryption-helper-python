@@ -16,8 +16,14 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Fail the build on any warning that reaches the interpreter.
-  PYTHONWARNINGS: error
+  # NOTE: PYTHONWARNINGS=error was set here and had to be removed. It applies
+  # to every tool the workflow runs, not just this project's code, so a
+  # DeprecationWarning inside bandit's `stevedore` dependency and a
+  # ResourceWarning inside `cyclonedx-bom` both became hard failures in tools
+  # whose internals we do not control.
+  #
+  # Warnings-as-errors belongs scoped to our own test run, where it already
+  # lives: `filterwarnings = ["error"]` in pyproject.toml.
   FORCE_COLOR: "1"
 
 jobs:
@@ -72,7 +78,7 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[]" pytest pytest-cov hypothesis
+          python -m pip install -e . pytest pytest-cov hypothesis
       # The coverage gate (fail_under = 95, branch coverage) lives in
       # pyproject.toml so local and CI runs agree.
       - name: Test
@@ -128,7 +134,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: python -m pip install --upgrade pip bandit[toml] pip-audit
+      - run: python -m pip install --upgrade pip "bandit[toml]" pip-audit
       # Bandit was configured in this repository but never actually run by any
       # workflow. It runs now, and it fails the build on a finding.
       - name: bandit
@@ -221,22 +227,19 @@ jobs:
       # SBOM for the built distribution. Listed in the original plan and
       # never implemented until now; pip-audit, Scorecard and build
       # attestation were present, this was not.
+      # SBOM for the built distribution.
       - name: Generate CycloneDX SBOM
         run: |
           python -m pip install --quiet cyclonedx-bom
-          python -m cyclonedx_py environment \
-            --output-format JSON \
-            --output-file dist/encryption-helper.cdx.json
-          python - <<'PY'
-          import json
-          with open("dist/encryption-helper.cdx.json", encoding="utf-8") as handle:
-              sbom = json.load(handle)
-          components = sbom.get("components", [])
-          names = {c["name"] for c in components}
-          if "cryptography" not in names:
-              raise SystemExit("SBOM does not list the cryptography dependency")
-          print(f"SBOM lists {len(components)} components")
-          PY
+          python -m cyclonedx_py environment             --output-format JSON             --output-file dist/encryption-helper.cdx.json
+      - name: Verify the SBOM lists the runtime dependency
+        run: >-
+          python -c "import json,sys;
+          s=json.load(open('dist/encryption-helper.cdx.json'));
+          c=s.get('components',[]);
+          names={x['name'] for x in c};
+          sys.exit('SBOM missing cryptography') if 'cryptography' not in names
+          else print(f'SBOM lists {len(c)} components')"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: distribution
