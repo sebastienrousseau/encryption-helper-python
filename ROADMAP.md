@@ -17,22 +17,12 @@ commitments.
   aliasing checks
 - Passphrase protection with pinned source semantics
 - 100% statement and branch coverage, fuzzing, documentation-accuracy tests
+- **Segmented encryption** (`aead_id` 2), using Tink's STREAM framing. Memory
+  is bounded by the segment size: a 5 GB file uses the same ~30 MB as a 5 MB
+  one. Verified against truncation, reordering, segment dropping, segment
+  duplication and single-byte tampering.
 
 ## Next
-
-### Streaming encryption
-
-Encryption holds the whole message in memory; peak usage is ~4× the payload.
-The CLI currently refuses input above `--max-size` rather than risking an
-out-of-memory kill.
-
-The fix is a chunked AEAD: 64 KiB frames, per-frame nonce from a counter, and
-the frame index in the associated data so reordering and truncation are
-detected. That would be a new `aead_id`, leaving existing containers readable.
-
-This is the one remaining piece of genuinely subtle cryptography here. Frame
-counters and truncation resistance are where streaming AEAD designs fail, so
-it needs test vectors and external review before it ships.
 
 ### Release to PyPI
 

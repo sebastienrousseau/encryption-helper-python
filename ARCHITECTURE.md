@@ -113,6 +113,38 @@ derive the same content key under two labels.
 RSA wraps a content key directly, so no KDF is involved. The others agree a
 shared secret and derive the content key from it.
 
+### AEAD modes
+
+`aead_id` selects how the payload is protected, independently of the KEM:
+
+| `aead_id` | Mode | Memory |
+| :-------: | ---- | ------ |
+| 1 | AES-256-GCM, one shot | proportional to payload |
+| 2 | AES-256-GCM, segmented | bounded by segment size |
+
+Segment framing is **Tink's STREAM**, not a new design:
+
+```text
+nonce = prefix (7 bytes) ‖ segment number (4, big endian) ‖ final (1 byte)
+```
+
+One 12-byte value defends three properties:
+
+- the **random prefix** prevents nonce reuse across messages under one key;
+- the **segment number** prevents reordering and dropping, because moving a
+  segment changes the nonce it must open with;
+- the **final flag** prevents truncation -- the last segment is marked as
+  last, so stopping early fails rather than yielding a shorter plaintext.
+
+Truncation resistance is what a naive chunked AEAD loses. Each segment is
+individually authenticated, so forging one is infeasible, but without a final
+marker an attacker can simply stop and the recipient cannot tell.
+
+`decrypt_stream` writes each segment only after its tag verifies, but earlier
+segments are already written when a later one fails. The CLI therefore writes
+to a temporary file in the destination directory and renames on success, so a
+caller never observes a partial plaintext.
+
 ## Error taxonomy
 
 ```text
@@ -138,8 +170,14 @@ That distinction is only useful to someone probing a key they should not have.
 
 ## Known limits
 
-- **No streaming.** Peak memory is ~4× the payload. The CLI refuses input
-  above `--max-size` rather than being OOM-killed mid-write.
+- **Throughput is hardware-bound, not code-bound.** Raw AES-GCM peaks at
+  ~4.1 GiB/s here, so a 5 GB pass costs at least 1.2 s. Operations are
+  CPU-bound and independent; parallelism, not micro-optimisation, is the
+  lever. Sixteen concurrent 50 MB jobs sustain ~2.1 GB/s aggregate.
+- **~60 ms of interpreter startup** dominates small operations. A 5 MB
+  encryption takes 60 ms, essentially all of it `import`. Deferring the
+  `importlib.metadata` lookup for `__version__` saved ~9.5 ms of that; the
+  remainder is `logging` and `cryptography`, both unavoidable.
 - **No hybrid KEM.** A composite X25519+ML-KEM key needs a composite key
   container; inventing one without external review would be false confidence.
 - **Windows permissions are advisory.** NTFS uses ACLs, which `os.chmod`

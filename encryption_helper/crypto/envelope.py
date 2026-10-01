@@ -48,6 +48,8 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from ..errors import DecryptionError, InvalidArgumentError
 
 __all__ = [
+    "AEAD_AES_256_GCM",
+    "AEAD_AES_256_GCM_STREAM",
     "MAGIC",
     "SUPPORTED_KEMS",
     "VERSION",
@@ -80,8 +82,12 @@ SUPPORTED_KEMS: Final = frozenset(
 #: Mechanisms that a sufficiently large quantum computer breaks.
 QUANTUM_VULNERABLE_KEMS: Final = frozenset({KEM_RSA_OAEP_SHA256, KEM_X25519_HKDF})
 
-#: AEAD identifier: AES-256-GCM.
+#: AEAD identifiers.
+#:
+#: One-shot holds the whole message in memory; streaming segments it, so a
+#: reader knows which it has from the header and memory can be bounded.
 AEAD_AES_256_GCM: Final = 1
+AEAD_AES_256_GCM_STREAM: Final = 2
 
 #: ``magic | version | kem | aead | reserved | wrapped key length``.
 _HEADER_STRUCT: Final = struct.Struct(">4sBBBBH")
@@ -394,6 +400,12 @@ def _parse(blob: bytes) -> tuple[bytes, int, bytes, bytes, bytes]:
         msg = (
             f"Unsupported key encapsulation identifier {kem_id}; this build "
             f"understands {known}. Upgrade encryption-helper to read it."
+        )
+        raise DecryptionError(msg)
+    if aead_id == AEAD_AES_256_GCM_STREAM:
+        msg = (
+            "This is a streaming container. Use decrypt_stream(), or the CLI, "
+            "which dispatches on the header automatically."
         )
         raise DecryptionError(msg)
     if aead_id != AEAD_AES_256_GCM:

@@ -25,28 +25,36 @@ supply one.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import getpass
+import io
 import json
 import logging
 import os
 import stat
 import sys
-from collections.abc import Sequence
+import tempfile
+from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import Any, Final, NoReturn
+from typing import IO, Any, Final, NoReturn
 
 from cryptography.hazmat.primitives.asymmetric.types import PrivateKeyTypes
 
-from . import __version__
 from ._io import (
+    _WINDOWS,
     PUBLIC_FILE_MODE,
     SECRET_FILE_MODE,
     read_bytes,
     resolve_destination,
     secure_write_bytes,
 )
-from .crypto import decrypt, encrypt, sign, verify
-from .crypto.envelope import QUANTUM_VULNERABLE_KEMS, SUPPORTED_KEMS
+from .crypto import decrypt, sign, verify
+from .crypto.envelope import (
+    AEAD_AES_256_GCM_STREAM,
+    QUANTUM_VULNERABLE_KEMS,
+    SUPPORTED_KEMS,
+)
+from .crypto.streaming import DEFAULT_SEGMENT_SIZE, decrypt_stream, encrypt_stream
 from .errors import (
     DecryptionError,
     EncryptionHelperError,
@@ -99,12 +107,38 @@ MAX_PASSPHRASE_FILE_BYTES: Final = 64 * 1024
 #: Raise it with --max-size if you have the headroom.
 DEFAULT_MAX_INPUT_BYTES: Final = 64 * 1024 * 1024
 
+#: Bytes of a container needed before its AEAD identifier can be read:
+#: 4 magic, 1 version, 1 kem_id, then the aead_id byte.
+_AEAD_ID_OFFSET: Final = 6
+_PEEK_SIZE: Final = _AEAD_ID_OFFSET + 1
+
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+class _VersionAction(argparse.Action):
+    """Print the version, resolved only when the flag is actually used.
+
+    `action="version"` needs its string at parser-construction time, which
+    would defeat the lazy metadata lookup for every other invocation.
+    """
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        _namespace: argparse.Namespace,
+        _values: object,
+        _option_string: str | None = None,
+    ) -> None:
+        """Print and exit."""
+        from . import __version__  # noqa: PLC0415
+
+        print(f"{parser.prog} {__version__}")
+        parser.exit()
 
 
 def _configure_logging(args: argparse.Namespace) -> None:
@@ -461,6 +495,13 @@ def _write_output(destination: str, data: bytes, *, mode: int, force: bool) -> s
 # ---------------------------------------------------------------------------
 
 
+def _resolve_runtime_version() -> str:
+    """Read the package version, deferred to keep import cost down."""
+    from . import __version__  # noqa: PLC0415
+
+    return str(__version__)
+
+
 def _capabilities() -> dict[str, Any]:
     """Describe what this build can do, and what is on a deadline.
 
@@ -470,7 +511,7 @@ def _capabilities() -> dict[str, Any]:
     2035, so the horizon is reported per algorithm rather than left implicit.
     """
     return {
-        "version": __version__,
+        "version": _resolve_runtime_version(),
         "algorithms": {
             name: {
                 "quantum_vulnerable": name in QUANTUM_VULNERABLE,
@@ -625,30 +666,165 @@ def _cmd_keygen(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+@contextlib.contextmanager
+def _input_stream(source: str) -> Iterator[IO[bytes]]:
+    """Yield a readable binary stream for a path, or stdin for ``-``."""
+    if source == _STDIO:
+        yield sys.stdin.buffer
+        return
+    path = Path(source).expanduser()
+    try:
+        handle = path.open("rb")
+    except OSError as exc:
+        msg = f"Could not read {path}: {exc.strerror}"
+        raise KeyReadError(msg) from exc
+    try:
+        yield handle
+    finally:
+        handle.close()
+
+
+@contextlib.contextmanager
+def _output_stream(
+    destination: str, *, mode: int, force: bool
+) -> Iterator[tuple[IO[bytes], list[str]]]:
+    """Yield a writable binary stream, committing atomically on success.
+
+    Streaming writes plaintext as each segment is authenticated, so a failure
+    part way through leaves an incomplete file. Writing to a temporary file in
+    the destination directory and renaming only on success means the caller
+    never sees a partial result.
+
+    Yields:
+        The stream, and a one-element list that receives the final
+        destination description once committed.
+    """
+    reported: list[str] = []
+    if destination == _STDIO:
+        yield sys.stdout.buffer, reported
+        sys.stdout.buffer.flush()
+        reported.append("<stdout>")
+        return
+
+    target = resolve_destination(destination)
+    if target.exists() and not force:
+        msg = (
+            f"{target} already exists. Pass --force to replace it; the "
+            "existing file will be backed up first."
+        )
+        raise KeyExistsError(msg)
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp_fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        if not _WINDOWS:
+            os.fchmod(tmp_fd, mode)
+        with os.fdopen(tmp_fd, "wb") as handle:
+            yield handle, reported
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        with contextlib.suppress(OSError):
+            tmp_path.unlink()
+        raise
+    tmp_path.replace(target)
+    reported.append(str(target))
+
+
+def _is_streaming_container(source: str) -> bool:
+    """Peek a container's AEAD identifier without consuming a stream.
+
+    Only used for a real file; a pipe cannot be rewound, so stdin is handled
+    by buffering the header inside the reader instead.
+    """
+    if source == _STDIO:
+        return False
+    path = Path(source).expanduser()
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(_PEEK_SIZE)
+    except OSError:
+        return False
+    return len(head) >= _PEEK_SIZE and head[_AEAD_ID_OFFSET] == AEAD_AES_256_GCM_STREAM
+
+
 def _cmd_encrypt(args: argparse.Namespace) -> int:
-    """Encrypt data to a public key."""
+    """Encrypt data to a public key, streaming so memory stays bounded."""
     public_key = load_public_key_file(args.public_key)
-    blob = encrypt(public_key, _read_input(args.input, max_size=args.max_size))
-    where = _write_output(args.output, blob, mode=PUBLIC_FILE_MODE, force=args.force)
+    with (
+        _input_stream(args.input) as source,
+        _output_stream(args.output, mode=PUBLIC_FILE_MODE, force=args.force) as (
+            destination,
+            reported,
+        ),
+    ):
+        written = encrypt_stream(
+            public_key,
+            source,
+            destination,
+            segment_size=args.segment_size,
+        )
+    where = reported[0] if reported else args.output
     _emit(
         args,
-        f"Encrypted {len(blob)} bytes to {where}",
-        {"output": where, "bytes": len(blob)},
+        f"Encrypted {written} bytes to {where}",
+        {"output": where, "bytes": written, "streaming": True},
     )
     return EXIT_OK
 
 
 def _cmd_decrypt(args: argparse.Namespace) -> int:
-    """Decrypt a container with a private key."""
+    """Decrypt a container, dispatching on its AEAD identifier.
+
+    A streaming container is processed segment by segment; a one-shot
+    container is read whole. The header says which, so the caller does not
+    have to know.
+    """
     private_key = _load_private_key(args, args.private_key)
-    plaintext = decrypt(private_key, _read_input(args.input, max_size=args.max_size))
-    where = _write_output(
-        args.output, plaintext, mode=SECRET_FILE_MODE, force=args.force
+
+    if _is_streaming_container(args.input):
+        with (
+            _input_stream(args.input) as source,
+            _output_stream(args.output, mode=SECRET_FILE_MODE, force=args.force) as (
+                destination,
+                reported,
+            ),
+        ):
+            written = decrypt_stream(private_key, source, destination)
+        where = reported[0] if reported else args.output
+        _emit(
+            args,
+            f"Decrypted {written} bytes to {where}",
+            {"output": where, "bytes": written, "streaming": True},
+        )
+        return EXIT_OK
+
+    # One-shot, or stdin where the header cannot be peeked without consuming
+    # it. Buffer, then dispatch on what we actually have.
+    blob = _read_input(args.input, max_size=args.max_size)
+    streaming = (
+        len(blob) >= _PEEK_SIZE and blob[_AEAD_ID_OFFSET] == AEAD_AES_256_GCM_STREAM
     )
+    if streaming:
+        with _output_stream(args.output, mode=SECRET_FILE_MODE, force=args.force) as (
+            destination,
+            reported,
+        ):
+            written = decrypt_stream(private_key, io.BytesIO(blob), destination)
+        where = reported[0] if reported else args.output
+    else:
+        plaintext = decrypt(private_key, blob)
+        written = len(plaintext)
+        where = _write_output(
+            args.output, plaintext, mode=SECRET_FILE_MODE, force=args.force
+        )
     _emit(
         args,
-        f"Decrypted {len(plaintext)} bytes to {where}",
-        {"output": where, "bytes": len(plaintext)},
+        f"Decrypted {written} bytes to {where}",
+        {"output": where, "bytes": written, "streaming": streaming},
     )
     return EXIT_OK
 
@@ -757,14 +933,26 @@ def _add_passphrase_flags(
 def _add_io_flags(parser: argparse.ArgumentParser, *, output: bool = True) -> None:
     """Add the shared ``--in``/``--out`` flags."""
     parser.add_argument(
+        "--segment-size",
+        type=int,
+        default=DEFAULT_SEGMENT_SIZE,
+        metavar="BYTES",
+        help=(
+            f"Plaintext bytes per encrypted segment (default: "
+            f"{DEFAULT_SEGMENT_SIZE // 1024} KiB). Bounds peak memory "
+            "regardless of input size."
+        ),
+    )
+    parser.add_argument(
         "--max-size",
         type=int,
         default=DEFAULT_MAX_INPUT_BYTES,
         metavar="BYTES",
         help=(
-            f"Refuse input larger than this (default: "
-            f"{DEFAULT_MAX_INPUT_BYTES // (1024 * 1024)} MiB). Encryption is "
-            "not streamed, so peak memory is roughly four times the payload."
+            f"Refuse non-streamed input larger than this (default: "
+            f"{DEFAULT_MAX_INPUT_BYTES // (1024 * 1024)} MiB). Only applies "
+            "where the whole input must be buffered -- reading a one-shot "
+            "container, or from a pipe. File streaming is unbounded."
         ),
     )
     parser.add_argument(
@@ -814,7 +1002,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--version", action="version", version=f"%(prog)s {__version__}"
+        "--version", action=_VersionAction, nargs=0, help="Print the version and exit."
     )
     parser.add_argument(
         "-v",

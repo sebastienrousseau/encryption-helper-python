@@ -909,7 +909,8 @@ class TestStdoutOutput:
         assert captured.out.startswith(b"EHEV")
         err = captured.err.decode()
         payload = json.loads(err[err.index("{") :])
-        assert payload["bytes"] == len(captured.out)
+        assert payload["bytes"] == 7  # plaintext bytes read
+        assert len(captured.out) > payload["bytes"]  # container is larger
 
 
 class TestExplicitPassphraseWhenLoading:

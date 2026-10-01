@@ -50,7 +50,6 @@ Security:
 from __future__ import annotations
 
 import logging
-from importlib import metadata
 
 from .crypto import decrypt, encrypt, is_valid_signature, sign, verify
 from .errors import (
@@ -87,10 +86,36 @@ from .keys import (
     write_key_pair,
 )
 
-try:
-    __version__ = metadata.version("encryption-helper")
-except metadata.PackageNotFoundError:  # pragma: no cover - source checkout
-    __version__ = "0.0.0+unknown"
+
+def _resolve_version() -> str:
+    """Read the installed version from package metadata.
+
+    Deferred rather than computed at import time. ``importlib.metadata``
+    costs about 8 ms to import -- it pulls in ``email.message`` and ``re`` --
+    which was roughly a fifth of this package's total import cost, paid by
+    every caller whether or not they ever asked for the version.
+    """
+    from importlib import metadata  # noqa: PLC0415
+
+    try:
+        return metadata.version("encryption-helper")
+    except metadata.PackageNotFoundError:  # pragma: no cover - source checkout
+        return "0.0.0+unknown"
+
+
+def __getattr__(name: str) -> object:
+    """Resolve ``__version__`` on first access.
+
+    Raises:
+        AttributeError: For any other name, as normal.
+    """
+    if name == "__version__":
+        version = _resolve_version()
+        globals()["__version__"] = version
+        return version
+    msg = f"module {__name__!r} has no attribute {name!r}"
+    raise AttributeError(msg)
+
 
 # A library configures no logging handlers of its own. Adding a NullHandler
 # keeps "No handlers could be found" warnings away without imposing any output

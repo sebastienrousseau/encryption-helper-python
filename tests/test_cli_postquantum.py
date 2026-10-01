@@ -10,11 +10,12 @@ one.
 
 from __future__ import annotations
 
+import io
 import json
 import stat
 
 import pytest
-from encryption_helper.cli import EXIT_OK, EXIT_USAGE, main
+from encryption_helper.cli import EXIT_KEY_EXISTS, EXIT_OK, EXIT_USAGE, main
 from encryption_helper.keys import POST_QUANTUM, QUANTUM_VULNERABLE
 
 from ._support import posix_only
@@ -229,39 +230,22 @@ class TestPostQuantumRoundTrips:
         )
 
 
-class TestInputSizeCeiling:
-    """Encryption is not streamed; peak memory is about four times the
-    payload. Refusing is better than an out-of-memory kill mid-write."""
+class TestStreamingIsUnbounded:
+    """Encryption streams, so input size is no longer limited.
 
-    def test_oversized_file_is_refused(self, tmp_path, capsys):
+    `--max-size` previously guarded against an out-of-memory kill, because
+    the whole payload was held in memory at roughly four times its size. With
+    segmented encryption, memory is bounded by the segment size instead and
+    file input of any size is fine.
+    """
+
+    def test_file_above_max_size_still_encrypts(self, tmp_path):
         keys = tmp_path / "k"
         main(keygen(keys, "--algorithm", "x25519"))
-        big = tmp_path / "big.bin"
-        big.write_bytes(b"x" * 2048)
+        payload = tmp_path / "big.bin"
+        payload.write_bytes(b"x" * 8192)
 
-        with pytest.raises(SystemExit) as excinfo:
-            main(
-                [
-                    "encrypt",
-                    "--public-key",
-                    str(keys / "key.pub.pem"),
-                    "--in",
-                    str(big),
-                    "--out",
-                    str(tmp_path / "o.bin"),
-                    "--max-size",
-                    "1024",
-                ]
-            )
-        assert excinfo.value.code == EXIT_USAGE
-        assert "exceeds the 1024-byte limit" in capsys.readouterr().err
-        assert not (tmp_path / "o.bin").exists()
-
-    def test_file_at_the_limit_is_accepted(self, tmp_path):
-        keys = tmp_path / "k"
-        main(keygen(keys, "--algorithm", "x25519"))
-        payload = tmp_path / "ok.bin"
-        payload.write_bytes(b"x" * 1024)
+        # Deliberately far below the input size: streaming ignores it.
         assert (
             main(
                 [
@@ -279,32 +263,105 @@ class TestInputSizeCeiling:
             )
             == EXIT_OK
         )
+        assert (tmp_path / "o.bin").stat().st_size > 8192
 
-    def test_oversized_stdin_is_refused(self, tmp_path, monkeypatch, capsys):
-        import io
-
+    def test_round_trip_with_a_tiny_segment_size(self, tmp_path):
+        """Many segments must reassemble in order."""
         keys = tmp_path / "k"
-        main(keygen(keys, "--algorithm", "x25519"))
-        monkeypatch.setattr(
-            "sys.stdin",
-            type("S", (), {"buffer": io.BytesIO(b"y" * 4096)})(),
+        main(keygen(keys, "--algorithm", "mlkem"))
+        payload = tmp_path / "m.bin"
+        payload.write_bytes(bytes(range(256)) * 400)  # 100 KiB
+
+        main(
+            [
+                "-q",
+                "encrypt",
+                "--public-key",
+                str(keys / "key.pub.pem"),
+                "--in",
+                str(payload),
+                "--out",
+                str(tmp_path / "m.enc"),
+                "--segment-size",
+                "4096",
+            ]
         )
+        main(
+            [
+                "-q",
+                "decrypt",
+                "--private-key",
+                str(keys / "key.pem"),
+                "--in",
+                str(tmp_path / "m.enc"),
+                "--out",
+                str(tmp_path / "m.out"),
+            ]
+        )
+        assert (tmp_path / "m.out").read_bytes() == payload.read_bytes()
+
+    def test_max_size_still_guards_buffered_input(self, tmp_path, capsys):
+        """`sign` reads its input whole, so the ceiling still applies there."""
+        keys = tmp_path / "k"
+        main(keygen(keys, "--algorithm", "mldsa"))
+        payload = tmp_path / "big.bin"
+        payload.write_bytes(b"x" * 4096)
+
         with pytest.raises(SystemExit) as excinfo:
             main(
                 [
-                    "encrypt",
-                    "--public-key",
-                    str(keys / "key.pub.pem"),
+                    "sign",
+                    "--private-key",
+                    str(keys / "key.pem"),
                     "--in",
-                    "-",
+                    str(payload),
                     "--out",
-                    str(tmp_path / "o.bin"),
+                    str(tmp_path / "o.sig"),
                     "--max-size",
                     "1024",
                 ]
             )
         assert excinfo.value.code == EXIT_USAGE
         assert "exceeds the 1024-byte limit" in capsys.readouterr().err
+
+    def test_a_failed_decrypt_leaves_no_partial_output(self, tmp_path):
+        """Streaming writes as it authenticates, so the commit is atomic."""
+        keys = tmp_path / "k"
+        main(keygen(keys, "--algorithm", "x25519"))
+        payload = tmp_path / "m.bin"
+        payload.write_bytes(b"y" * 20000)
+        main(
+            [
+                "-q",
+                "encrypt",
+                "--public-key",
+                str(keys / "key.pub.pem"),
+                "--in",
+                str(payload),
+                "--out",
+                str(tmp_path / "m.enc"),
+                "--segment-size",
+                "4096",
+            ]
+        )
+        # Corrupt a late segment: earlier ones authenticate, then it fails.
+        blob = bytearray((tmp_path / "m.enc").read_bytes())
+        blob[-30] ^= 0xFF
+        (tmp_path / "m.enc").write_bytes(bytes(blob))
+
+        code = main(
+            [
+                "decrypt",
+                "--private-key",
+                str(keys / "key.pem"),
+                "--in",
+                str(tmp_path / "m.enc"),
+                "--out",
+                str(tmp_path / "m.out"),
+            ]
+        )
+        assert code != EXIT_OK
+        assert not (tmp_path / "m.out").exists(), "a partial plaintext survived"
 
 
 class TestJsonStreamSeparation:
@@ -340,7 +397,10 @@ class TestJsonStreamSeparation:
         err = captured.err.decode()
         payload = json.loads(err[err.index("{") :])
         assert payload["output"] == "<stdout>"
-        assert payload["bytes"] == len(captured.out)
+        # `bytes` is the plaintext read, not the ciphertext written, so the
+        # meaningful check is that stdout carries a complete container.
+        assert payload["bytes"] == 7
+        assert len(captured.out) > payload["bytes"]
 
     def test_report_stays_on_stdout_for_a_file_destination(self, tmp_path, capsys):
         keys = tmp_path / "k"
@@ -402,3 +462,300 @@ class TestEdgeCases:
         monkeypatch.setattr(cli_module, "write_key_pair", sizeless)
         assert main(keygen(tmp_path, "--algorithm", "ed25519")) == EXIT_OK
         assert "Key size:     n/a" in capsys.readouterr().out
+
+
+class TestStreamingCliPaths:
+    """The CLI's streaming plumbing: stdio, atomic commit, and dispatch."""
+
+    def test_encrypt_from_stdin_to_stdout(self, tmp_path, monkeypatch, capsysbinary):
+        keys = tmp_path / "k"
+        main(keygen(keys, "--algorithm", "x25519"))
+        capsysbinary.readouterr()
+        monkeypatch.setattr(
+            "sys.stdin", type("S", (), {"buffer": io.BytesIO(b"piped payload")})()
+        )
+        assert (
+            main(
+                [
+                    "-q",
+                    "encrypt",
+                    "--public-key",
+                    str(keys / "key.pub.pem"),
+                    "--in",
+                    "-",
+                    "--out",
+                    "-",
+                ]
+            )
+            == EXIT_OK
+        )
+        assert capsysbinary.readouterr().out.startswith(b"EHEV")
+
+    def test_decrypt_from_stdin_detects_a_streaming_container(
+        self, tmp_path, monkeypatch, capsysbinary
+    ):
+        """A pipe cannot be peeked, so the reader buffers and then dispatches."""
+        keys = tmp_path / "k"
+        main(keygen(keys, "--algorithm", "x25519"))
+        (tmp_path / "m.txt").write_bytes(b"from a pipe")
+        main(
+            [
+                "-q",
+                "encrypt",
+                "--public-key",
+                str(keys / "key.pub.pem"),
+                "--in",
+                str(tmp_path / "m.txt"),
+                "--out",
+                str(tmp_path / "m.enc"),
+            ]
+        )
+        capsysbinary.readouterr()
+        blob = (tmp_path / "m.enc").read_bytes()
+        monkeypatch.setattr("sys.stdin", type("S", (), {"buffer": io.BytesIO(blob)})())
+        assert (
+            main(
+                [
+                    "-q",
+                    "decrypt",
+                    "--private-key",
+                    str(keys / "key.pem"),
+                    "--in",
+                    "-",
+                    "--out",
+                    "-",
+                ]
+            )
+            == EXIT_OK
+        )
+        assert capsysbinary.readouterr().out == b"from a pipe"
+
+    def test_existing_output_requires_force(self, tmp_path, capsys):
+        keys = tmp_path / "k"
+        main(keygen(keys, "--algorithm", "x25519"))
+        (tmp_path / "m.txt").write_bytes(b"payload")
+        (tmp_path / "taken.bin").write_bytes(b"existing")
+
+        code = main(
+            [
+                "encrypt",
+                "--public-key",
+                str(keys / "key.pub.pem"),
+                "--in",
+                str(tmp_path / "m.txt"),
+                "--out",
+                str(tmp_path / "taken.bin"),
+            ]
+        )
+        assert code == EXIT_KEY_EXISTS
+        assert (tmp_path / "taken.bin").read_bytes() == b"existing"
+        assert "--force" in capsys.readouterr().err
+
+    def test_force_replaces_the_output(self, tmp_path):
+        keys = tmp_path / "k"
+        main(keygen(keys, "--algorithm", "x25519"))
+        (tmp_path / "m.txt").write_bytes(b"payload")
+        (tmp_path / "taken.bin").write_bytes(b"existing")
+        assert (
+            main(
+                [
+                    "-q",
+                    "encrypt",
+                    "--public-key",
+                    str(keys / "key.pub.pem"),
+                    "--in",
+                    str(tmp_path / "m.txt"),
+                    "--out",
+                    str(tmp_path / "taken.bin"),
+                    "--force",
+                ]
+            )
+            == EXIT_OK
+        )
+        assert (tmp_path / "taken.bin").read_bytes().startswith(b"EHEV")
+
+    def test_missing_input_file_is_reported(self, tmp_path, capsys):
+        keys = tmp_path / "k"
+        main(keygen(keys, "--algorithm", "x25519"))
+        code = main(
+            [
+                "encrypt",
+                "--public-key",
+                str(keys / "key.pub.pem"),
+                "--in",
+                str(tmp_path / "absent.bin"),
+                "--out",
+                str(tmp_path / "o.bin"),
+            ]
+        )
+        assert code != EXIT_OK
+        assert "Could not read" in capsys.readouterr().err
+
+    def test_no_temporary_file_survives_a_failure(self, tmp_path):
+        keys = tmp_path / "k"
+        main(keygen(keys, "--algorithm", "x25519"))
+        (tmp_path / "m.txt").write_bytes(b"payload")
+        main(
+            [
+                "-q",
+                "encrypt",
+                "--public-key",
+                str(keys / "key.pub.pem"),
+                "--in",
+                str(tmp_path / "m.txt"),
+                "--out",
+                str(tmp_path / "m.enc"),
+            ]
+        )
+        blob = bytearray((tmp_path / "m.enc").read_bytes())
+        blob[-1] ^= 0xFF
+        (tmp_path / "bad.enc").write_bytes(bytes(blob))
+
+        main(
+            [
+                "decrypt",
+                "--private-key",
+                str(keys / "key.pem"),
+                "--in",
+                str(tmp_path / "bad.enc"),
+                "--out",
+                str(tmp_path / "out.bin"),
+            ]
+        )
+        assert not list(tmp_path.glob("*.tmp")), "a temporary file was orphaned"
+        assert not (tmp_path / "out.bin").exists()
+
+    def test_one_shot_container_from_the_library_still_decrypts(self, tmp_path):
+        """Backward compatibility: `encrypt()` produces aead_id 1."""
+        from encryption_helper import encrypt as encrypt_bytes
+        from encryption_helper.keys import load_public_key_file
+
+        keys = tmp_path / "k"
+        main(keygen(keys, "--algorithm", "x25519"))
+        public = load_public_key_file(keys / "key.pub.pem")
+        (tmp_path / "m.enc").write_bytes(encrypt_bytes(public, b"one shot"))
+
+        assert (
+            main(
+                [
+                    "-q",
+                    "decrypt",
+                    "--private-key",
+                    str(keys / "key.pem"),
+                    "--in",
+                    str(tmp_path / "m.enc"),
+                    "--out",
+                    str(tmp_path / "m.out"),
+                ]
+            )
+            == EXIT_OK
+        )
+        assert (tmp_path / "m.out").read_bytes() == b"one shot"
+
+
+class TestBufferedPathEdges:
+    """The paths that still buffer: stdin, and one-shot output."""
+
+    def test_oversized_stdin_for_a_buffered_command(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """`sign` reads stdin whole, so the ceiling applies."""
+        keys = tmp_path / "k"
+        main(keygen(keys, "--algorithm", "mldsa"))
+        monkeypatch.setattr(
+            "sys.stdin", type("S", (), {"buffer": io.BytesIO(b"y" * 4096)})()
+        )
+        with pytest.raises(SystemExit) as excinfo:
+            main(
+                [
+                    "sign",
+                    "--private-key",
+                    str(keys / "key.pem"),
+                    "--in",
+                    "-",
+                    "--out",
+                    str(tmp_path / "o.sig"),
+                    "--max-size",
+                    "1024",
+                ]
+            )
+        assert excinfo.value.code == EXIT_USAGE
+        assert "exceeds the 1024-byte limit" in capsys.readouterr().err
+
+    def test_unstattable_buffered_input_defers_to_the_reader(self, tmp_path, capsys):
+        keys = tmp_path / "k"
+        main(keygen(keys, "--algorithm", "mldsa"))
+        code = main(
+            [
+                "sign",
+                "--private-key",
+                str(keys / "key.pem"),
+                "--in",
+                str(tmp_path / "absent.bin"),
+                "--out",
+                str(tmp_path / "o.sig"),
+            ]
+        )
+        assert code != EXIT_OK
+        assert "No such file" in capsys.readouterr().err
+
+    def test_one_shot_decrypt_to_stdout(self, tmp_path, capsysbinary):
+        """The non-streaming write path, reached by a library container."""
+        from encryption_helper import encrypt as encrypt_bytes
+        from encryption_helper.keys import load_public_key_file
+
+        keys = tmp_path / "k"
+        main(keygen(keys, "--algorithm", "x25519"))
+        public = load_public_key_file(keys / "key.pub.pem")
+        (tmp_path / "m.enc").write_bytes(encrypt_bytes(public, b"one shot out"))
+        capsysbinary.readouterr()
+
+        assert (
+            main(
+                [
+                    "-q",
+                    "decrypt",
+                    "--private-key",
+                    str(keys / "key.pem"),
+                    "--in",
+                    str(tmp_path / "m.enc"),
+                    "--out",
+                    "-",
+                ]
+            )
+            == EXIT_OK
+        )
+        assert capsysbinary.readouterr().out == b"one shot out"
+
+    def test_unreadable_container_is_not_treated_as_streaming(self, tmp_path):
+        """A peek that fails must not claim the container is streaming."""
+        import encryption_helper.cli as cli_module
+
+        assert cli_module._is_streaming_container(str(tmp_path / "absent")) is False
+        assert cli_module._is_streaming_container("-") is False
+
+    def test_streamed_output_skips_fchmod_on_windows(self, tmp_path, monkeypatch):
+        """NTFS uses ACLs; os.fchmod cannot express them, so it is skipped."""
+        import encryption_helper.cli as cli_module
+
+        keys = tmp_path / "k"
+        main(keygen(keys, "--algorithm", "x25519"))
+        (tmp_path / "m.txt").write_bytes(b"payload")
+        monkeypatch.setattr(cli_module, "_WINDOWS", True)
+
+        assert (
+            main(
+                [
+                    "-q",
+                    "encrypt",
+                    "--public-key",
+                    str(keys / "key.pub.pem"),
+                    "--in",
+                    str(tmp_path / "m.txt"),
+                    "--out",
+                    str(tmp_path / "m.enc"),
+                ]
+            )
+            == EXIT_OK
+        )
+        assert (tmp_path / "m.enc").read_bytes().startswith(b"EHEV")
