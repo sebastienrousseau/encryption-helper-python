@@ -27,7 +27,7 @@ install: ## Install dependencies and git hooks
 	$(PY) pre-commit install
 
 .PHONY: check
-check: lint types test security mutation ## Everything CI runs
+check: lint types test security mutation mcp ## Everything CI runs
 
 .PHONY: lint
 lint: ## Lint and check formatting
@@ -50,6 +50,14 @@ test: ## Run the suite with the coverage gate
 .PHONY: security
 security: ## Static security scan
 	$(PY) bandit -c pyproject.toml -r encryption_helper
+
+.PHONY: mcp
+mcp: ## Lint, type check and test the MCP server package
+	$(PY) ruff check packages/
+	$(PY) ruff format --check packages/
+	$(PY) mypy --strict packages/encryption-helper-mcp/encryption_helper_mcp
+	PYTHONPATH=packages/encryption-helper-mcp $(PY) pytest -q --no-cov \
+		packages/encryption-helper-mcp/tests
 
 .PHONY: mutation
 mutation: ## Verify the tests detect broken security properties

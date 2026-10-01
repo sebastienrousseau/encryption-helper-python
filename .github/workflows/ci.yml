@@ -110,6 +110,28 @@ jobs:
         working-directory: fuzz
         run: python run_fuzz.py --iterations 50000
 
+  mcp:
+    name: MCP server
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip -e . pytest ruff mypy
+      - run: ruff check packages/
+      - run: ruff format --check packages/
+      - run: mypy --strict packages/encryption-helper-mcp/encryption_helper_mcp
+      # The boundary tests are the reason this job exists: they assert the
+      # server cannot act on key material, which is the claim that makes it
+      # safe to expose to a model.
+      - name: Test the MCP server, including its read-only boundary
+        run: pytest -q --no-cov packages/encryption-helper-mcp/tests
+        env:
+          PYTHONPATH: packages/encryption-helper-mcp
+
   mutation:
     name: Mutation
     runs-on: ubuntu-latest
@@ -275,7 +297,7 @@ jobs:
   ci-ok:
     name: CI passed
     if: always()
-    needs: [lint, types, test, mutation, fuzz, examples, security, build]
+    needs: [lint, types, test, mutation, mcp, fuzz, examples, security, build]
     runs-on: ubuntu-latest
     steps:
       - name: Fail if any dependency failed

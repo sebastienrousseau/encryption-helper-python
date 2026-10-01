@@ -1,0 +1,44 @@
+[build-system]
+requires = ["poetry-core>=2.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[project]
+name = "encryption-helper-mcp"
+version = "0.0.2"
+description = "Read-only Model Context Protocol server for encryption-helper"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "HSBC Open Source", email = "opensource@hsbc.com" }]
+license = "Apache-2.0"
+maintainers = [{ name = "HSBC Open Source", email = "opensource@hsbc.com" }]
+keywords = ["mcp", "post-quantum", "cryptography", "inventory", "nist"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Security :: Cryptography",
+    "Typing :: Typed",
+]
+# The protocol is implemented against the standard library, so the only
+# dependency is the package whose data this server exposes. A tool handling
+# questions about key material should not bring a dependency tree with it.
+dependencies = ["encryption-helper>=0.0.2,<0.1.0"]
+
+[project.urls]
+Homepage = "https://github.com/hsbc/encryption-helper-python"
+Repository = "https://github.com/hsbc/encryption-helper-python"
+Issues = "https://github.com/hsbc/encryption-helper-python/issues"
+
+[project.scripts]
+encryption-helper-mcp = "encryption_helper_mcp.server:main"
+
+[tool.poetry]
+packages = [{ include = "encryption_helper_mcp" }]
