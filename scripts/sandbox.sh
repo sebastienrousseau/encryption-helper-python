@@ -148,6 +148,7 @@ fi
 # Podman is preferred where both are available: rootless by default, no
 # long-running daemon holding root, and no requirement for the invoking user to
 # belong to a group equivalent to root.
+#
 # Assigns to the global `engine`. A function that printed the result would have
 # to be called in a command substitution, where `exit` terminates only the
 # subshell; assigning directly keeps the failure paths able to stop the script.
@@ -290,15 +291,16 @@ for arg in "$@"; do
   previous="$arg"
 done
 
-# Deliberately unquoted: this variable holds a whitespace-separated list of
-# variable *names*, which cannot contain whitespace.
-# shellcheck disable=SC2206
+# EH_SANDBOX_FORWARD_ENV holds a whitespace-separated list of variable names,
+# so splitting it on whitespace is the intended reading. The `${a[@]+...}`
+# form is used throughout because `set -u` treats an empty array expansion as
+# an unset variable on older releases of bash.
 read -r -a extra_env <<<"${EH_SANDBOX_FORWARD_ENV:-}"
 forward_env+=(${extra_env[@]+"${extra_env[@]}"})
 
 for var in ${forward_env[@]+"${forward_env[@]}"}; do
   if [[ -z "${!var-}" ]]; then
-    printf 'sandbox: %s is named on the command line but is unset or empty in this shell; the container would see no passphrase.\n' "$var" >&2
+    printf 'sandbox: %s is to be forwarded but is unset or empty in this shell; the container would see no value for it.\n' "$var" >&2
     exit 2
   fi
   # `--env NAME` with no value forwards the value from this process, so the

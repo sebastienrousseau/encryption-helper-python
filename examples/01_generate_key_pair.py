@@ -14,15 +14,14 @@ from __future__ import annotations
 
 import stat
 import sys
-import tempfile
-from pathlib import Path
 
+from _workspace import workspace
 from encryption_helper import fingerprint_sha256, generate_rsa, write_key_pair
 
 
 def main() -> int:
     """Generate a passphrase-protected RSA key pair into a temporary directory."""
-    destination = Path(tempfile.mkdtemp(prefix="encryption-helper-example-"))
+    destination = workspace()
 
     # 1. Generate. No I/O, no logging, no printing.
     key = generate_rsa(key_size=2048)

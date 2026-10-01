@@ -12,9 +12,7 @@ Run:
 
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
-
+from _workspace import workspace
 from encryption_helper import (
     POST_QUANTUM,
     QUANTUM_VULNERABLE,
@@ -32,7 +30,7 @@ from encryption_helper.crypto.envelope import KEM_MLKEM768
 
 def main() -> int:
     """Encrypt with ML-KEM and sign with ML-DSA."""
-    destination = Path(tempfile.mkdtemp(prefix="encryption-helper-pq-"))
+    destination = workspace()
 
     print(f"post-quantum:       {', '.join(sorted(POST_QUANTUM))}")
     print(f"deadline from 2035: {', '.join(sorted(QUANTUM_VULNERABLE))}")

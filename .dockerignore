@@ -47,8 +47,9 @@ benches
 fuzz
 examples
 scripts
+packages
 
-# Documentation and project governance text, other than the README, LICENCE
+# Documentation and project governance text, other than the README, LICENSE
 # and NOTICE that the package metadata requires.
 docs
 assets

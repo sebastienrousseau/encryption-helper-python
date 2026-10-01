@@ -12,9 +12,7 @@ Run:
 
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
-
+from _workspace import workspace
 from encryption_helper import (
     KeyReadError,
     encode_public_key,
@@ -27,7 +25,7 @@ from encryption_helper import (
 
 def main() -> int:
     """Write a key pair, reload it, and re-encode the public half."""
-    destination = Path(tempfile.mkdtemp(prefix="encryption-helper-example-"))
+    destination = workspace()
     key = generate_ed25519()
     result = write_key_pair(key, destination, name="id", passphrase=b"a passphrase")
 

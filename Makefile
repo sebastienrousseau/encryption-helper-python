@@ -93,6 +93,13 @@ build: ## Build sdist and wheel, then validate
 verify: ## Full release-candidate gate in a clean environment
 	./scripts/verify-release-candidate.sh
 
+.PHONY: sandbox
+sandbox: ## Build the container sandbox image and smoke-test it
+	@# Builds from Containerfile with podman or docker, whichever is present,
+	@# then runs `capabilities` inside the hardened container as a smoke test.
+	@# See docs/SANDBOX.md. Requires network access for the base image.
+	./scripts/sandbox.sh --rebuild capabilities
+
 .PHONY: clean
 clean: ## Remove build and cache artefacts
 	rm -rf build dist .coverage .pytest_cache .ruff_cache .mypy_cache .hypothesis
