@@ -277,9 +277,9 @@ def apply(root: Path, mutation: Mutation) -> str:
     return original
 
 
-def run_tests(root: Path, mutation: Mutation) -> bool:
-    """Run the mutation's test selection. Returns True if something failed."""
-    result = subprocess.run(  # noqa: S603
+def _pytest(root: Path, selection: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
+    """Run pytest over ``selection`` and return the completed process."""
+    return subprocess.run(  # noqa: S603
         [
             sys.executable,
             "-m",
@@ -290,14 +290,77 @@ def run_tests(root: Path, mutation: Mutation) -> bool:
             "-p",
             "no:cacheprovider",
             "--no-cov",
-            *mutation.tests,
+            *selection,
         ],
         cwd=root,
         capture_output=True,
         text=True,
         check=False,
     )
-    return result.returncode != 0
+
+
+def verify_baseline(root: Path, mutations: list[Mutation]) -> str | None:
+    """Confirm the unmutated tests actually pass before trusting a failure.
+
+    Without this, *any* reason pytest exits non-zero reads as "mutation
+    caught" -- a missing pytest, a bad argument, an unrelated pre-existing
+    failure. The first version of this harness reported 20/20 in under a
+    second because `sys.executable` under the shebang was the system
+    interpreter, which has no pytest. Every mutation "passed" because
+    nothing ran.
+
+    Returns:
+        An error description, or None if the baseline is sound.
+    """
+    selection = tuple(sorted({path for m in mutations for path in m.tests}))
+    result = _pytest(root, selection)
+    if result.returncode != 0:
+        tail = (result.stdout + result.stderr).strip().splitlines()[-6:]
+        return (
+            "the test selection does not pass on unmutated code, so a "
+            "failure cannot be attributed to a mutation:\n    " + "\n    ".join(tail)
+        )
+    return None
+
+
+def run_tests(root: Path, mutation: Mutation) -> bool:
+    """Run the mutation's test selection. True if something failed."""
+    return _pytest(root, mutation.tests).returncode != 0
+
+
+def preflight(root: Path, selected: list[Mutation]) -> int:
+    """Refuse to run unless the tree is clean and the baseline passes.
+
+    Returns:
+        0 to proceed, or a non-zero exit code.
+    """
+    dirt = subprocess.run(  # noqa: S603
+        ["git", "-C", str(root), "status", "--porcelain"],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout
+    if dirt.strip():
+        print(
+            "error: working tree is not clean; refusing to patch files.",
+            file=sys.stderr,
+        )
+        print(dirt, file=sys.stderr)
+        return 2
+
+    print("verifying the baseline passes ... ", end="", flush=True)
+    problem = verify_baseline(root, selected)
+    if problem is not None:
+        print("FAILED")
+        print(f"error: {problem}", file=sys.stderr)
+        print(
+            "\nhint: use the interpreter that has pytest, e.g.\n"
+            "  .venv/bin/python scripts/mutation_check.py",
+            file=sys.stderr,
+        )
+        return 2
+    print("ok")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -323,21 +386,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {m.id:24} {m.property}")
         return 0
 
-    dirt = subprocess.run(  # noqa: S603
-        ["git", "-C", str(root), "status", "--porcelain"],  # noqa: S607
-        capture_output=True,
-        text=True,
-        check=False,
-    ).stdout
-    if dirt.strip():
-        print(
-            "error: working tree is not clean; refusing to patch files.",
-            file=sys.stderr,
-        )
-        print(dirt, file=sys.stderr)
-        return 2
+    status = preflight(root, selected)
+    if status:
+        return status
 
-    print(f"{len(selected)} mutations\n")
+    print(f"\n{len(selected)} mutations\n")
     survivors: list[Mutation] = []
     started = time.perf_counter()
 
