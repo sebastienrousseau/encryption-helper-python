@@ -68,7 +68,10 @@ from cryptography.hazmat.primitives.asymmetric import (
     x448,
     x25519,
 )
-from cryptography.hazmat.primitives.asymmetric.types import PublicKeyTypes
+from cryptography.hazmat.primitives.asymmetric.types import (
+    PrivateKeyTypes,
+    PublicKeyTypes,
+)
 
 from .crypto import metadata
 from .errors import InvalidArgumentError
@@ -309,45 +312,98 @@ def _try_public_key(path: Path, blob: bytes) -> Finding | None:
     return None
 
 
+_ENCRYPTED_DETAIL: Final = (
+    "The private key is protected by a passphrase. Its algorithm is inside "
+    "the encrypted structure and cannot be determined without the passphrase, "
+    "which this scan does not request. Assess the matching public key, or "
+    "record this file as requiring manual review."
+)
+
+#: First byte of every DER encoding this scan reads: an ASN.1 SEQUENCE.
+_DER_SEQUENCE: Final = 0x30
+
+
+class _Encrypted:
+    """Marker: the blob is a private key, but a passphrase protects it."""
+
+
+def _load_private(blob: bytes) -> PrivateKeyTypes | _Encrypted | None:
+    """Load ``blob`` as a private key in any encoding this library writes.
+
+    PEM and OpenSSH keys announce themselves with a banner; DER keys do not,
+    so any blob that starts like DER is tried as one. That is how `scan`
+    missed DER keys entirely, and reported OpenSSH keys -- which were tried
+    with the PEM loader -- as unparseable.
+
+    RSA validation is skipped. It costs about 77 ms per RSA-3072 key, which
+    dominated a scan, and buys nothing here: only the public half's size is
+    read, and no operation is performed with the key.
+
+    Returns:
+        The key; :class:`_Encrypted` if it is passphrase-protected; or
+        :data:`None` if ``blob`` is not a private key.
+
+    Raises:
+        ValueError: If a banner says private key but the content does not
+            parse, so the caller can report it for review.
+    """
+    if b"-----BEGIN OPENSSH PRIVATE KEY-----" in blob:
+        try:
+            return serialization.load_ssh_private_key(blob, password=None)
+        except TypeError:
+            return _Encrypted()
+    if any(banner in blob for banner in _PRIVATE_BANNERS):
+        return serialization.load_pem_private_key(
+            blob, password=None, unsafe_skip_rsa_key_validation=True
+        )
+    return _load_der_private(blob)
+
+
+def _load_der_private(blob: bytes) -> PrivateKeyTypes | _Encrypted | None:
+    """Try ``blob`` as a DER private key, which carries no banner."""
+    if not blob or blob[0] != _DER_SEQUENCE:
+        return None
+    try:
+        return serialization.load_der_private_key(
+            blob, password=None, unsafe_skip_rsa_key_validation=True
+        )
+    except TypeError:
+        return _Encrypted()  # encrypted PKCS#8: a password is required
+    except (ValueError, UnsupportedAlgorithm):
+        return None  # DER, but not a private key: perhaps a certificate
+
+
+def _private_finding(path: Path, kind: str, detail: str) -> Finding:
+    return Finding(
+        path=path,
+        kind=kind,
+        algorithm=None,
+        key_size=None,
+        quantum_vulnerable=None,
+        deprecated_from=None,
+        disallowed_from=None,
+        replacements=(),
+        detail=detail,
+    )
+
+
 def _try_private_key(path: Path, blob: bytes) -> Finding | None:
     """Classify ``blob`` as a private key, encrypted or not."""
     if any(banner in blob for banner in _ENCRYPTED_BANNERS):
-        return Finding(
-            path=path,
-            kind=KIND_ENCRYPTED_PRIVATE_KEY,
-            algorithm=None,
-            key_size=None,
-            quantum_vulnerable=None,
-            deprecated_from=None,
-            disallowed_from=None,
-            replacements=(),
-            detail=(
-                "The private key is protected by a passphrase. Its algorithm "
-                "is inside the encrypted structure and cannot be determined "
-                "without the passphrase, which this scan does not request. "
-                "Assess the matching public key, or record this file as "
-                "requiring manual review."
-            ),
-        )
-    if not any(banner in blob for banner in _PRIVATE_BANNERS):
-        return None
+        return _private_finding(path, KIND_ENCRYPTED_PRIVATE_KEY, _ENCRYPTED_DETAIL)
     try:
-        key = serialization.load_pem_private_key(blob, password=None)
+        key = _load_private(blob)
     except (ValueError, TypeError, UnsupportedAlgorithm):
-        return Finding(
-            path=path,
-            kind=KIND_PRIVATE_KEY,
-            algorithm=None,
-            key_size=None,
-            quantum_vulnerable=None,
-            deprecated_from=None,
-            disallowed_from=None,
-            replacements=(),
-            detail=(
-                "The file carries a private key banner but could not be "
-                "parsed. Review it manually."
-            ),
+        return _private_finding(
+            path,
+            KIND_PRIVATE_KEY,
+            "The file carries a private key banner but could not be parsed. "
+            "Review it manually.",
         )
+    if key is None:
+        return None
+    if isinstance(key, _Encrypted):
+        return _private_finding(path, KIND_ENCRYPTED_PRIVATE_KEY, _ENCRYPTED_DETAIL)
     return _from_public_key(path, key.public_key(), kind=KIND_PRIVATE_KEY)
 
 

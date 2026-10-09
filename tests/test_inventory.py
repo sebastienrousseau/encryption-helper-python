@@ -375,3 +375,100 @@ class TestUnrecognisedKeyTypes:
 
         findings = scan([tmp_path])
         assert [f.path.name for f in findings] == ["real.pub"]
+
+
+class TestEveryEncodingThisLibraryWrites:
+    """`scan` must find the keys `keygen` produces, in every format it offers.
+
+    DER private keys were not found at all -- the private-key check looked
+    only for PEM banners -- and OpenSSH private keys, parsed with the PEM
+    loader, were reported as unparseable.
+    """
+
+    @pytest.mark.parametrize(
+        ("algorithm", "fmt", "expected"),
+        [
+            ("rsa", "der", "rsa"),
+            ("ed25519", "der", "ed25519"),
+            ("mlkem", "der", "mlkem"),
+            ("ed25519", "openssh", "ed25519"),
+            ("ecdsa", "openssh", "ecdsa"),
+            ("rsa", "openssh", "rsa"),
+        ],
+    )
+    def test_unencrypted_private_keys_are_identified(
+        self, tmp_path, algorithm, fmt, expected
+    ):
+        key = (
+            generate(algorithm, key_size=2048)
+            if algorithm == "rsa"
+            else generate(algorithm)
+        )
+        path = tmp_path / f"key.{fmt}"
+        path.write_bytes(encode_private_key(key, fmt=fmt))
+        finding = classify(path)
+        assert finding is not None
+        assert finding.kind == KIND_PRIVATE_KEY
+        assert finding.algorithm == expected
+
+    def test_an_encrypted_der_key_is_reported_as_encrypted(self, tmp_path):
+        path = tmp_path / "key.der"
+        path.write_bytes(
+            encode_private_key(
+                generate("ed25519"), fmt="der", passphrase=b"pass phrase"
+            )
+        )
+        finding = classify(path)
+        assert finding is not None
+        assert finding.kind == KIND_ENCRYPTED_PRIVATE_KEY
+
+    def test_an_encrypted_openssh_key_is_reported_as_encrypted(self, tmp_path):
+        bcrypt = pytest.importorskip("bcrypt")
+        assert bcrypt
+        path = tmp_path / "id_ed25519"
+        path.write_bytes(
+            encode_private_key(generate("ed25519"), fmt="openssh", passphrase=b"pp")
+        )
+        assert classify(path).kind == KIND_ENCRYPTED_PRIVATE_KEY
+
+    def test_a_protected_openssh_key_without_bcrypt_installed(
+        self, tmp_path, monkeypatch
+    ):
+        """cryptography raises TypeError for a protected key and no password."""
+
+        def protected(_data, password):
+            assert password is None
+            raise TypeError("Key is password-protected.")
+
+        monkeypatch.setattr(
+            "encryption_helper.inventory.serialization.load_ssh_private_key", protected
+        )
+        path = tmp_path / "id_ed25519"
+        path.write_bytes(encode_private_key(generate("ed25519"), fmt="openssh"))
+        assert classify(path).kind == KIND_ENCRYPTED_PRIVATE_KEY
+
+    def test_a_der_certificate_is_still_a_certificate(self, tmp_path):
+        pem = _certificate(tmp_path, generate("ecdsa")).read_bytes()
+        der = x509.load_pem_x509_certificate(pem).public_bytes(
+            serialization.Encoding.DER
+        )
+        path = tmp_path / "cert.der"
+        path.write_bytes(der)
+        assert classify(path).kind == KIND_CERTIFICATE
+
+    def test_a_der_public_key_is_still_a_public_key(self, tmp_path):
+        from encryption_helper import encode_public_key as encode
+
+        path = tmp_path / "pub.der"
+        path.write_bytes(encode(generate("ed25519").public_key(), fmt="der"))
+        assert classify(path).kind == KIND_PUBLIC_KEY
+
+    def test_a_corrupt_openssh_key_is_flagged_for_review(self, tmp_path):
+        path = tmp_path / "id_broken"
+        banner = b"OPENSSH PRIVATE KEY-----"
+        path.write_bytes(
+            b"-----BEGIN " + banner + b"\nAAAA\n-----END " + banner + b"\n"
+        )
+        finding = classify(path)
+        assert finding.kind == KIND_PRIVATE_KEY
+        assert finding.undetermined

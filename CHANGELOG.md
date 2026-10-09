@@ -103,6 +103,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deliberately indistinguishable from a corrupt file.
 - Messages name algorithms ("an Ed25519 key", "an RSA-2048 key") rather
   than Python classes ("a Ed25519PublicKey").
+- **`scan` finds the private keys `keygen` writes in every format.** DER
+  private keys carry no PEM banner and were not found at all; OpenSSH
+  private keys were parsed with the PEM loader and reported as
+  unparseable. Both are now identified, and protected ones reported as
+  encrypted. RSA key validation is skipped while scanning -- only the public
+  half's size is read -- which made each RSA private key cost about 77 ms.
 - **Migration dates now follow security strength, as NIST's do.** Every
   classical algorithm was reported as "deprecated 2030, disallowed 2035".
   That is correct only for 112-bit keys such as RSA-2048 and P-224. It
