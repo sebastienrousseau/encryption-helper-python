@@ -67,6 +67,7 @@ from .envelope import (
     _decapsulate,
     _encapsulate,
     _kem_for_public_key,
+    _parse_header,
 )
 
 #: Called with the cumulative plaintext byte count after each segment.
@@ -290,22 +291,7 @@ def _parse_stream_header(
         msg = "Ciphertext is too short to be a valid container."
         raise DecryptionError(msg)
 
-    magic, version, kem_id, aead_id, reserved, encap_len = HEADER_STRUCT.unpack(header)
-    if magic != MAGIC:
-        msg = "Not an encryption-helper container: bad magic bytes."
-        raise DecryptionError(msg)
-    if version != VERSION:
-        msg = f"Unsupported container version {version}; this build reads {VERSION}."
-        raise DecryptionError(msg)
-    if aead_id != AEAD_AES_256_GCM_STREAM:
-        msg = (
-            f"This is not a streaming container (aead_id {aead_id}). Use "
-            "decrypt() for a one-shot container."
-        )
-        raise DecryptionError(msg)
-    if reserved != 0:
-        msg = "Reserved header byte is not zero; the container is malformed."
-        raise DecryptionError(msg)
+    kem_id, encap_len = _parse_header(header, streaming=True)
 
     encapsulation = _read_exact(source, encap_len)
     stream_header = _read_exact(source, _STREAM_HEADER_SIZE)

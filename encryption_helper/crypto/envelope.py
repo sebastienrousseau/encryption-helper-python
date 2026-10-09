@@ -260,14 +260,21 @@ def _decapsulate(
             raise _opaque_kem_failure() from exc
         return _derive_content_key(shared, kem_id)
 
-    if not isinstance(private_key, x25519.X25519PrivateKey):
-        raise _wrong_key_type(_X25519_LABEL, private_key)
-    try:
-        peer = x25519.X25519PublicKey.from_public_bytes(encapsulation)
-        shared = private_key.exchange(peer)
-    except ValueError as exc:
-        raise _opaque_kem_failure() from exc
-    return _derive_content_key(shared, kem_id)
+    if kem_id == KEM_X25519_HKDF:
+        if not isinstance(private_key, x25519.X25519PrivateKey):
+            raise _wrong_key_type(_X25519_LABEL, private_key)
+        try:
+            peer = x25519.X25519PublicKey.from_public_bytes(encapsulation)
+            shared = private_key.exchange(peer)
+        except ValueError as exc:
+            raise _opaque_kem_failure() from exc
+        return _derive_content_key(shared, kem_id)
+
+    # Fail closed. Every reader validates the header first, so this is a
+    # second line: an identifier nobody recognised must never fall through
+    # to whichever mechanism happens to be last in this function.
+    msg = f"Unsupported key encapsulation identifier {kem_id}."
+    raise DecryptionError(msg)
 
 
 def _cannot_encrypt(public_key: PublicKeyTypes) -> InvalidArgumentError:
@@ -378,22 +385,25 @@ def encrypt(
     return header + encapsulation + nonce + ciphertext
 
 
-def _parse(blob: bytes) -> tuple[bytes, int, bytes, bytes, bytes]:
-    """Split a container into header, wrapped key, nonce and ciphertext.
+def _parse_header(header: bytes, *, streaming: bool) -> tuple[int, int]:
+    """Validate a container's fixed header for one decryption mode.
+
+    The single place every reader checks framing. The one-shot and streaming
+    readers each had their own copy, and they drifted: the streaming copy
+    never checked the KEM identifier, so a container naming an unknown
+    mechanism was handed to the X25519 path instead of being rejected.
+
+    Args:
+        header: Exactly ``HEADER_STRUCT.size`` bytes.
+        streaming: Whether the caller is the streaming reader.
+
+    Returns:
+        ``(kem_id, encapsulation_length)``.
 
     Raises:
-        DecryptionError: If the container is malformed or an unsupported
-            version.
+        DecryptionError: If any field is wrong for this build and this mode.
     """
-    if len(blob) < _HEADER_SIZE:
-        msg = "Ciphertext is too short to be a valid container."
-        raise DecryptionError(msg)
-
-    header = blob[:_HEADER_SIZE]
-    magic, version, kem_id, aead_id, reserved, wrapped_len = HEADER_STRUCT.unpack(
-        header
-    )
-
+    magic, version, kem_id, aead_id, reserved, encap_len = HEADER_STRUCT.unpack(header)
     if magic != MAGIC:
         msg = "Not an encryption-helper container: bad magic bytes."
         raise DecryptionError(msg)
@@ -410,18 +420,40 @@ def _parse(blob: bytes) -> tuple[bytes, int, bytes, bytes, bytes]:
             f"understands {known}. Upgrade encryption-helper to read it."
         )
         raise DecryptionError(msg)
-    if aead_id == AEAD_AES_256_GCM_STREAM:
+    if streaming and aead_id != AEAD_AES_256_GCM_STREAM:
+        msg = (
+            f"This is not a streaming container (aead_id {aead_id}). Use "
+            "decrypt() for a one-shot container."
+        )
+        raise DecryptionError(msg)
+    if not streaming and aead_id == AEAD_AES_256_GCM_STREAM:
         msg = (
             "This is a streaming container. Use decrypt_stream(), or the CLI, "
             "which dispatches on the header automatically."
         )
         raise DecryptionError(msg)
-    if aead_id != AEAD_AES_256_GCM:
+    if not streaming and aead_id != AEAD_AES_256_GCM:
         msg = f"Unsupported AEAD identifier {aead_id}."
         raise DecryptionError(msg)
     if reserved != 0:
         msg = "Reserved header byte is not zero; the container is malformed."
         raise DecryptionError(msg)
+    return kem_id, encap_len
+
+
+def _parse(blob: bytes) -> tuple[bytes, int, bytes, bytes, bytes]:
+    """Split a container into header, wrapped key, nonce and ciphertext.
+
+    Raises:
+        DecryptionError: If the container is malformed or an unsupported
+            version.
+    """
+    if len(blob) < _HEADER_SIZE:
+        msg = "Ciphertext is too short to be a valid container."
+        raise DecryptionError(msg)
+
+    header = blob[:_HEADER_SIZE]
+    kem_id, wrapped_len = _parse_header(header, streaming=False)
 
     minimum = _HEADER_SIZE + wrapped_len + _NONCE_SIZE + _TAG_SIZE
     if len(blob) < minimum:

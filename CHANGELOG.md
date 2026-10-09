@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Reads are now exact, and writes to raw streams that accept data in parts
   are completed instead of silently truncated. Containers written by earlier
   builds from ordinary files and pipes are unaffected.
+- **The streaming reader now rejects unknown key-encapsulation identifiers.**
+  It had its own copy of the header checks, which had drifted from the
+  one-shot reader's and never checked `kem_id`; an unknown identifier fell
+  through to the X25519 path. Both readers now share one validator, and
+  decapsulation fails closed rather than defaulting to a mechanism.
 - **Migration dates now follow security strength, as NIST's do.** Every
   classical algorithm was reported as "deprecated 2030, disallowed 2035".
   That is correct only for 112-bit keys such as RSA-2048 and P-224. It

@@ -197,6 +197,27 @@ class TestMalformedContainers:
         with pytest.raises(DecryptionError, match="not a streaming container"):
             open_sealed(x25519_key, bytes(blob))
 
+    @pytest.mark.parametrize("fixture", ["rsa_key", "mlkem_key", "x25519_key"])
+    def test_unknown_kem_identifier_is_rejected(self, request, fixture):
+        """The streaming reader skipped this check, unlike the one-shot reader.
+
+        An unknown identifier fell through to the X25519 path: an RSA key got
+        "needs an X25519 private key", and an X25519 key a misleading
+        integrity failure, where both readers must name the real problem.
+        """
+        key = request.getfixturevalue(fixture)
+        blob = seal(key, b"data")
+        blob[5] = 99
+        with pytest.raises(DecryptionError, match="Unsupported key encapsulation"):
+            open_sealed(key, bytes(blob))
+
+    def test_decapsulate_fails_closed_on_an_unknown_identifier(self, x25519_key):
+        """Defence in depth behind header validation: no fall-through."""
+        from encryption_helper.crypto.envelope import _decapsulate
+
+        with pytest.raises(DecryptionError, match="Unsupported key encapsulation"):
+            _decapsulate(x25519_key, 99, bytes(32))
+
     def test_nonzero_reserved_byte(self, x25519_key):
         blob = seal(x25519_key, b"data")
         blob[7] = 1
