@@ -1,0 +1,332 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege by default. Individual jobs escalate only what they need.
+permissions:
+  contents: read
+
+# Superseded runs are cancelled rather than left burning runners.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # NOTE: PYTHONWARNINGS=error was set here and had to be removed. It applies
+  # to every tool the workflow runs, not just this project's code, so a
+  # DeprecationWarning inside bandit's `stevedore` dependency and a
+  # ResourceWarning inside `cyclonedx-bom` both became hard failures in tools
+  # whose internals we do not control.
+  #
+  # Warnings-as-errors belongs scoped to our own test run, where it already
+  # lives: `filterwarnings = ["error"]` in pyproject.toml.
+  FORCE_COLOR: "1"
+
+jobs:
+  lint:
+    name: Lint and format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      # From the lockfile, not `pip install ruff`. An unpinned linter lets
+      # an upstream release fail the build and makes CI disagree with a
+      # developer's machine; both happened on the first real run.
+      - name: Install tooling
+        run: |
+          python -m pip install --upgrade pip poetry
+          poetry install --only dev --no-root
+      # No --exit-zero anywhere: a lint error fails the build. The previous
+      # workflow ran flake8 twice, the second time with --exit-zero, so lint
+      # findings could never block a merge.
+      - name: ruff check
+        run: poetry run ruff check --output-format=github .
+      - name: ruff format
+        run: poetry run ruff format --check --diff .
+
+  types:
+    name: Type check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: |
+          python -m pip install --upgrade pip poetry
+          poetry install --only dev --no-root
+          poetry run pip install -e .
+      - run: poetry run mypy --strict encryption_helper
+
+  test:
+    name: Test ${{ matrix.python-version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . pytest pytest-cov hypothesis
+      # The coverage gate (fail_under = 95, branch coverage) lives in
+      # pyproject.toml so local and CI runs agree.
+      - name: Test
+        run: pytest --cov --cov-report=term-missing --cov-report=xml
+
+  fuzz:
+    name: Fuzz
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip -e .
+      # The standalone runner needs no fuzzing engine and no compiler, so it
+      # can be a required check. Every target must fail closed on arbitrary
+      # input: a typed error, never a struct.error, IndexError or plaintext.
+      - name: Fuzz the parsers
+        working-directory: fuzz
+        run: python run_fuzz.py --iterations 50000
+
+  mcp:
+    name: MCP server
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip -e . pytest ruff mypy
+      - run: ruff check packages/
+      - run: ruff format --check packages/
+      - run: mypy --strict packages/encryption-helper-mcp/encryption_helper_mcp
+      # The boundary tests are the reason this job exists: they assert the
+      # server cannot act on key material, which is the claim that makes it
+      # safe to expose to a model.
+      - name: Test the MCP server, including its read-only boundary
+        run: pytest -q --no-cov packages/encryption-helper-mcp/tests
+        env:
+          PYTHONPATH: packages/encryption-helper-mcp
+
+  mutation:
+    name: Mutation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip -e . pytest pytest-cov hypothesis
+      # Breaks twenty security properties on purpose and asserts some test
+      # fails for each. A survivor means a property is asserted nowhere.
+      # Coverage says lines were executed; this says the assertions bite.
+      - name: Verify the tests detect broken security properties
+        run: python scripts/mutation_check.py
+
+  examples:
+    name: Examples and benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip -e .
+      # Documentation that is never executed drifts. Every example runs, and
+      # the docs-accuracy suite checks the README against the code.
+      - name: Run every example
+        run: |
+          for example in examples/[0-9]*.py; do
+            echo "--- $example"
+            python "$example"
+          done
+      - name: Benchmarks (smoke, not a regression gate)
+        run: python benches/bench_crypto.py --quick
+
+  security:
+    name: Security scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip "bandit[toml]" pip-audit
+      # Bandit was configured in this repository but never actually run by any
+      # workflow. It runs now, and it fails the build on a finding.
+      - name: bandit
+        run: bandit -c pyproject.toml -r encryption_helper
+      - name: pip-audit
+        run: pip-audit --strict --desc
+      # This project's whole purpose is generating private keys, so a
+      # committed key is a first-class failure, not a lint nit. .gitignore is
+      # not a security boundary -- `git add -f` bypasses it.
+      - name: Check for committed private key material
+        run: |
+          # Anchored at the start of a line, which is how real PEM armour
+          # appears. An indented mention inside a docstring or a code fence is
+          # documentation, not a leaked key.
+          if git grep -lIE -- '^-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----'; then
+            echo "::error::A private key appears to be committed to this repository."
+            exit 1
+          fi
+          echo "No committed private key material found."
+      - name: Check SPDX headers are present
+        run: |
+          missing=0
+          for f in $(git ls-files '*.py'); do
+            if ! head -3 "$f" | grep -q 'SPDX-License-Identifier: Apache-2.0'; then
+              echo "::error file=$f::missing SPDX-License-Identifier header"
+              missing=1
+            fi
+          done
+          exit $missing
+
+  build:
+    name: Build distribution
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip build twine
+      - run: python -m build
+      - run: twine check --strict dist/*
+      - name: Verify the type marker ships in the wheel
+        run: |
+          python - <<'PY'
+          import glob, sys, zipfile
+          wheel = glob.glob("dist/*.whl")[0]
+          names = zipfile.ZipFile(wheel).namelist()
+          if not any(n.endswith("py.typed") for n in names):
+              sys.exit("py.typed is missing from the wheel")
+          print("py.typed present")
+          PY
+      # Install the built wheel into a clean environment and drive the real
+      # console script. Tests run from the source tree cannot catch a broken
+      # entry point or missing package data.
+      - name: Smoke test the installed wheel
+        run: |
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/pip install --quiet dist/*.whl
+          /tmp/smoke/bin/encryption-helper --version
+          /tmp/smoke/bin/encryption-helper --help
+          /tmp/smoke/bin/encryption-helper keygen \
+            --out-dir /tmp/smoke-keys --key-size 2048 --no-passphrase
+          test "$(stat -c '%a' /tmp/smoke-keys/key.pem)" = "600" \
+            || { echo "::error::private key is not mode 0600"; exit 1; }
+          /tmp/smoke/bin/encryption-helper fingerprint /tmp/smoke-keys/key.pub.pem
+          # An encrypted PEM must be generatable AND loadable from the
+          # installed wheel, not only from the source tree.
+          export SMOKE_PASS='smoke test passphrase'
+          /tmp/smoke/bin/encryption-helper --quiet keygen \
+            --out-dir /tmp/smoke-enc --key-size 2048 --passphrase-env SMOKE_PASS
+          head -1 /tmp/smoke-enc/key.pem | grep -q 'BEGIN ENCRYPTED PRIVATE KEY' \
+            || { echo "::error::key was not encrypted at rest"; exit 1; }
+          echo signed-content > /tmp/smoke-msg
+          /tmp/smoke/bin/encryption-helper --quiet sign \
+            --private-key /tmp/smoke-enc/key.pem --passphrase-env SMOKE_PASS \
+            --in /tmp/smoke-msg --out /tmp/smoke-msg.sig
+          /tmp/smoke/bin/encryption-helper verify \
+            --public-key /tmp/smoke-enc/key.pub.pem \
+            --signature /tmp/smoke-msg.sig --in /tmp/smoke-msg \
+            || { echo "::error::encrypted key round trip failed"; exit 1; }
+          echo secret | /tmp/smoke/bin/encryption-helper --quiet encrypt \
+            --public-key /tmp/smoke-keys/key.pub.pem --in - --out - \
+            | /tmp/smoke/bin/encryption-helper --quiet decrypt \
+              --private-key /tmp/smoke-keys/key.pem --in - --out - \
+            | grep -qx secret \
+            || { echo "::error::encrypt/decrypt round trip failed"; exit 1; }
+          echo "Wheel smoke test passed."
+      # SBOM for the built distribution. Listed in the original plan and
+      # never implemented until now; pip-audit, Scorecard and build
+      # attestation were present, this was not.
+      # SBOM for the built distribution.
+      - name: Generate CycloneDX SBOM
+        run: |
+          python -m pip install --quiet cyclonedx-bom
+          python -m cyclonedx_py environment             --output-format JSON             --output-file dist/encryption-helper.cdx.json
+      - name: Verify the SBOM lists the runtime dependency
+        run: >-
+          python -c "import json,sys;
+          s=json.load(open('dist/encryption-helper.cdx.json'));
+          c=s.get('components',[]);
+          names={x['name'] for x in c};
+          sys.exit('SBOM missing cryptography') if 'cryptography' not in names
+          else print(f'SBOM lists {len(c)} components')"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: distribution
+          path: dist/
+
+  # The container sandbox is the documented way to run the tool, the MCP
+  # server and the examples without installing anything, so it is built and
+  # exercised here exactly as an operator would use it: through the wrapper,
+  # with its hardening flags.
+  sandbox:
+    name: Container sandbox
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: CLI image
+        run: ./scripts/sandbox.sh --engine docker --rebuild --json capabilities
+      - name: Runs as a non-root user
+        run: |
+          uid="$(docker run --rm --entrypoint id encryption-helper:local -u)"
+          test "$uid" = 10001 || { echo "image runs as uid $uid"; exit 1; }
+      - name: Example suite in the sandbox
+        run: ./scripts/sandbox.sh --engine docker --rebuild --target examples
+      - name: MCP server in the sandbox, over stdio
+        run: |
+          printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+            | ./scripts/sandbox.sh --engine docker --rebuild --target mcp > mcp.out
+          python3 -c "import json,sys; r=[json.loads(l) for l in open('mcp.out')]; t=[x['name'] for x in r[1]['result']['tools']]; print(t); sys.exit(0 if 'scan_directory' in t else 1)"
+
+  # A single required check to protect the branch with, so the matrix can grow
+  # without editing branch protection each time.
+  ci-ok:
+    name: CI passed
+    if: always()
+    needs: [lint, types, test, mutation, mcp, fuzz, examples, security, build, sandbox]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any dependency failed
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+      - run: echo "All checks passed."

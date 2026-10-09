@@ -1,4 +1,3 @@
-# tests/__init__.py
-
-# This file can be left empty, but it must exist to make Python treat the
-# directory as a package, which is necessary for relative imports.
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2024-2026 HSBC Group Management Services Limited
+"""Test suite for :mod:`encryption_helper`."""

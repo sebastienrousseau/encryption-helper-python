@@ -1,0 +1,91 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Build-context exclusions. The Containerfile copies only the files the wheel
+# build needs, so this file is a second line of defence: it keeps the context
+# small and ensures that nothing listed here can reach the daemon even if the
+# COPY instructions are widened later.
+
+# Version control history and metadata. Large, and may retain file revisions
+# that are no longer present in the working tree.
+.git
+.gitignore
+.gitattributes
+.github
+
+# Local virtual environments. Platform-specific and never valid inside the
+# image.
+.venv
+venv
+ENV
+env
+
+# Build and packaging artefacts from host-side builds. A stale wheel here could
+# otherwise shadow the one built in the image.
+build
+dist
+wheels
+*.egg-info
+
+# Tool caches and coverage data. Not inputs to the wheel.
+**/__pycache__
+**/*.py[cod]
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.hypothesis
+.coverage
+.coverage.*
+htmlcov
+mutants
+.mutmut-cache
+
+# Tests, benchmarks, fuzz harnesses, examples and maintenance scripts. These
+# are excluded from the published wheel as well; the shipped image is the
+# distribution, not the development tree.
+tests
+benches
+fuzz
+scripts
+
+# The examples and the MCP server package are inputs to the `examples` and
+# `mcp` targets, but their tests and caches are not.
+examples/*
+!examples/_workspace.py
+!examples/[0-9]*.py
+packages/*/tests
+
+# Documentation and project governance text, other than the README, LICENSE
+# and NOTICE that the package metadata requires.
+docs
+assets
+*.md
+!README.md
+# The MCP package declares its README as the PyPI long description, so its
+# wheel cannot be built without it.
+!packages/encryption-helper-mcp/README.md
+CITATION.cff
+
+# Container definitions themselves are not build inputs.
+Containerfile
+Dockerfile
+.dockerignore
+
+# Key material must never enter a build context. The repository ignores these
+# patterns, but an untracked file in a working tree would otherwise be sent to
+# the daemon and could be captured in a layer.
+#
+# The `**/` prefix matters: .dockerignore patterns are anchored at the context
+# root, so a bare `*.pem` would exclude ./service.pem but not
+# ./secrets/service.pem -- the layout the documentation itself recommends.
+**/*.pem
+**/*.key
+**/*.der
+**/*.p12
+**/*.pfx
+**/*.jks
+**/*.asc
+**/*.gpg
+**/id_rsa*
+**/id_ed25519*
+**/id_ecdsa*
+**/.env

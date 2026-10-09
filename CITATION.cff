@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: If you use this software, please cite it as below.
+title: "Encryption Helper"
+abstract: >-
+  A Python library and command-line tool for generating, protecting and using
+  asymmetric keys, including the post-quantum ML-KEM (FIPS 203) and ML-DSA
+  (FIPS 204) algorithms.
+type: software
+authors:
+  - name: HSBC Open Source
+    email: opensource@hsbc.com
+repository-code: https://github.com/hsbc/encryption-helper-python
+license: Apache-2.0
+version: 0.0.2
+keywords:
+  - cryptography
+  - post-quantum
+  - ml-kem
+  - ml-dsa
+  - key-management

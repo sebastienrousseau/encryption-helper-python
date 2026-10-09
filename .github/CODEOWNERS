@@ -1,0 +1,13 @@
+# Default owners for everything in this repository.
+* @hsbc/opensource
+
+# Cryptographic code and the security policy require review from the security
+# owners. Getting these wrong is not recoverable by a follow-up patch.
+/encryption_helper/crypto/ @hsbc/opensource
+/encryption_helper/_io.py  @hsbc/opensource
+/SECURITY.md               @hsbc/opensource
+/docs/SECURITY-*.md        @hsbc/opensource
+
+# Supply chain.
+/.github/workflows/ @hsbc/opensource
+/poetry.lock        @hsbc/opensource
