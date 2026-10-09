@@ -71,7 +71,7 @@ from cryptography.hazmat.primitives.asymmetric import (
 from cryptography.hazmat.primitives.asymmetric.types import PublicKeyTypes
 
 from .crypto import metadata
-from .policy import assess
+from .policy import NIST_LEGACY_DISALLOWED_FROM, assess
 
 __all__ = [
     "MAX_CANDIDATE_BYTES",
@@ -358,8 +358,8 @@ def _try_container(path: Path, blob: bytes) -> Finding | None:
     name = info.key_establishment or f"identifier {info.key_establishment_id}"
     if not info.quantum_vulnerable:
         detail = (
-            f"Encrypted file using {name}, which is not vulnerable to a "
-            "quantum computer. No migration is required."
+            f"Encrypted file using {name}, a NIST post-quantum standard. "
+            "No migration is required."
         )
         replacements: tuple[str, ...] = ()
     else:
@@ -486,6 +486,12 @@ def summarise(findings: list[Finding]) -> dict[str, object]:
         "action_required": sum(1 for f in findings if f.action_required),
         "quantum_vulnerable": sum(1 for f in findings if f.quantum_vulnerable),
         "undetermined": sum(1 for f in findings if f.undetermined),
+        "below_minimum_strength": sum(
+            1
+            for f in findings
+            if f.disallowed_from is not None
+            and f.disallowed_from <= NIST_LEGACY_DISALLOWED_FROM
+        ),
         "needs_attention": sum(1 for f in findings if f.needs_attention),
         "by_kind": dict(sorted(by_kind.items())),
     }

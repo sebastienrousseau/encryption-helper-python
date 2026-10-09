@@ -77,14 +77,21 @@ def _write_output(destination: str, data: bytes, *, mode: int, force: bool) -> s
     """Write to a path, or to stdout when ``destination`` is ``-``.
 
     Returns:
-        A human-readable description of where the data went.
+        Where the data went: the file's path, or ``<stdout>``. This value is
+        reported to the user and published as the ``output`` field of the
+        JSON contract, so it must be a path a caller can use.
     """
     if destination == _STDIO:
         sys.stdout.buffer.write(data)
         sys.stdout.buffer.flush()
         return "<stdout>"
-    path = secure_write_bytes(destination, data, mode=mode, overwrite=force)
-    return str(path)
+    # `secure_write_bytes` returns a WriteOutcome, not a path. Stringifying
+    # the outcome itself yields its repr, which was previously reported to
+    # the user and emitted as `output` in the JSON contract. `str()` accepts
+    # any object, so no type checker objects; `test_cli_output_paths.py`
+    # asserts the reported value names a file that exists.
+    outcome = secure_write_bytes(destination, data, mode=mode, overwrite=force)
+    return str(outcome.path)
 
 
 @contextlib.contextmanager

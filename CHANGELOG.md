@@ -7,7 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Migration dates now follow security strength, as NIST's do.** Every
+  classical algorithm was reported as "deprecated 2030, disallowed 2035".
+  That is correct only for 112-bit keys such as RSA-2048 and P-224. It
+  overstated the urgency for RSA-3072/4096, P-256/384/521, Ed25519, Ed448 and
+  X25519, which NIST IR 8547 (initial public draft) moves straight to
+  disallowed after 2035. It also understated it for weak keys found by
+  `scan`: RSA-1024 and P-192 were given a 2030 date, although NIST SP
+  800-131A has disallowed them since the end of 2013. `assess`, `scan`,
+  `capabilities`, the keygen notice and the MCP tools all take their dates
+  from the corrected policy. **Inventories produced by earlier builds should
+  be regenerated.**
+- `sign` and `convert` reported an object representation instead of the
+  output path, in both the human-readable line and the JSON `output` field.
+- `inspect` and `scan` no longer describe a post-quantum container as "not
+  vulnerable to a quantum computer". They now state that it uses a NIST
+  post-quantum standard, which is what is actually known.
+- `scripts/sandbox.sh` wrote first-use build output to stdout, corrupting
+  piped output. It now goes to stderr.
+- `.dockerignore` key-material patterns matched only at the top level of the
+  build context, so `secrets/service.pem` would have been sent to the build
+  daemon. They now match at any depth.
+
 ### Added
+
+- `policy.security_strength()`, `NIST_LEGACY_DISALLOWED_FROM`, and
+  `legacy_disallowed_from` in the published horizon. `scan` adds
+  `below_minimum_strength` to its summary, and marks those findings "replace
+  now".
+- Container targets `mcp` and `examples`, selected with
+  `scripts/sandbox.sh --target`. The MCP server sees the host directory
+  read-only. The examples get no host mount. CI builds and exercises all
+  three targets through the wrapper.
+- Examples `10_counterparty_file_exchange.py`, covering out-of-band
+  fingerprint checks and sign-then-encrypt, and `11_mcp_assistant_session.py`.
+- README sections on migration planning, interoperability (the container
+  format is not OpenPGP or CMS), the sandbox, the MCP server and support.
 
 - **Segmented (streaming) encryption**, `aead_id` 2. Encryption previously
   held the whole payload in memory at roughly four times its size, so a 5 GB
@@ -38,8 +75,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never leaves a partial plaintext.
 
 - **Post-quantum cryptography.** ML-KEM-768 and ML-KEM-1024 (FIPS 203) for
-  encryption, ML-DSA-44/65/87 (FIPS 204) for signing. NIST IR 8547 deprecates
-  RSA and the elliptic curves from 2030 and disallows them from 2035; every
+  encryption, ML-DSA-44/65/87 (FIPS 204) for signing. NIST IR 8547 (initial
+  public draft) disallows RSA and the elliptic curves after 2035; every
   algorithm this package previously offered was on that list. No new
   dependency was needed -- both are in `cryptography` 46+.
 - **X25519** ephemeral-static encryption, as `age` and HPKE do, and **Ed448**

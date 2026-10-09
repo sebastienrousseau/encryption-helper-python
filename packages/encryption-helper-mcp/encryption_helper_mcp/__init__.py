@@ -15,7 +15,45 @@ command-line interface remains the way to perform those operations.
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 __all__ = ["__version__"]
 
-#: Kept in step with the core package by ``tests/test_packaging.py``.
-__version__ = "0.0.2"
+#: Matches the version in this distribution's ``pyproject.toml``.
+_DECLARED = re.compile(r'^version\s*=\s*"([^"]+)"', re.MULTILINE)
+
+
+def _resolve_version() -> str:
+    """Return the distribution version.
+
+    Read from installed metadata rather than hard-coded here, so
+    ``pyproject.toml`` is the only place a version is declared and bumping it
+    is one edit. Falls back to the declared value when running from a source
+    checkout, where no metadata exists.
+    """
+    from importlib.metadata import PackageNotFoundError, version  # noqa: PLC0415
+
+    try:
+        return version("encryption-helper-mcp")
+    except PackageNotFoundError:
+        pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        try:
+            found = _DECLARED.search(pyproject.read_text(encoding="utf-8"))
+        except OSError:  # pragma: no cover - only if the checkout is partial
+            return "unknown"
+        return found.group(1) if found else "unknown"
+
+
+def __getattr__(name: str) -> object:
+    """Resolve ``__version__`` on first access.
+
+    Raises:
+        AttributeError: For any other name, as normal.
+    """
+    if name == "__version__":
+        resolved = _resolve_version()
+        globals()["__version__"] = resolved
+        return resolved
+    msg = f"module {__name__!r} has no attribute {name!r}"
+    raise AttributeError(msg)

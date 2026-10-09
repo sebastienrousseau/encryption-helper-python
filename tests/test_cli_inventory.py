@@ -44,7 +44,11 @@ class TestInspect:
     def test_a_post_quantum_container_is_not_flagged(self, tmp_path, capsys):
         path = _container(tmp_path)
         main(["inspect", "--in", str(path)])
-        assert "Not vulnerable" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "post-quantum standard" in out
+        # Post-quantum algorithms are believed resistant, not proven so; a
+        # report published under a bank's name must not claim more.
+        assert "Not vulnerable" not in out
 
     def test_it_reads_only_the_header(self, tmp_path, capsys):
         """A truncated file is still describable, which proves the bound."""

@@ -232,6 +232,43 @@ needs a passphrase, the tool prompts on the terminal. The wrapper allocates a
 pseudo-terminal only when both stdin and stdout are attached to one, so the
 prompt works interactively while piped and redirected output remains byte-exact.
 
+### 3.7 The example suite
+
+The `examples` target runs every script in [`examples/`](../examples) inside
+the same hardened container. It is the quickest way for a reviewer to watch
+each capability work without installing anything.
+
+```bash
+./scripts/sandbox.sh --target examples                                  # all, in order
+./scripts/sandbox.sh --target examples 10_counterparty_file_exchange.py # one
+```
+
+No host directory is mounted. The examples write only to temporary
+directories on the container's `/tmp` tmpfs, and remove them on exit.
+
+### 3.8 The MCP server
+
+The `mcp` target runs [`encryption-helper-mcp`](../packages/encryption-helper-mcp/README.md)
+on stdio, serving the current directory **read-only**. Register the wrapper as
+the server command in an MCP client:
+
+```json
+{
+  "mcpServers": {
+    "encryption-helper": {
+      "command": "/path/to/encryption-helper-python/scripts/sandbox.sh",
+      "args": ["--target", "mcp"]
+    }
+  }
+}
+```
+
+The client starts the server in its own working directory, which is what gets
+mounted. The read-only mount means the server's no-write property is enforced
+by the kernel as well as by its tests. The wrapper never allocates a terminal
+for this target, because a terminal would rewrite the JSON-RPC stream, and the
+first build's output goes to stderr for the same reason.
+
 ## 4. Using the engines directly
 
 The wrapper is a convenience. The equivalent explicit commands are below, and
@@ -246,6 +283,10 @@ podman build -t encryption-helper:local .
 # Docker reads Dockerfile by default. A Dockerfile symlink to Containerfile is
 # provided, so `docker build .` also works; -f is the explicit form.
 docker build -f Containerfile -t encryption-helper:local .
+
+# The other targets. Without --target the command-line image is built.
+podman build --target mcp -t encryption-helper-mcp:local .
+podman build --target examples -t encryption-helper-examples:local .
 
 # Stamp the OCI version label from a release pipeline.
 docker build -f Containerfile --build-arg VERSION=0.0.2 \
@@ -326,17 +367,19 @@ available commands.
 ## 6. Wrapper reference
 
 ```text
-Usage: scripts/sandbox.sh [--rebuild] [--engine podman|docker] [--] ARGS...
+Usage: scripts/sandbox.sh [--rebuild] [--engine podman|docker]
+                          [--target cli|mcp|examples] [--] ARGS...
 
   --rebuild              Rebuild the image even if it already exists.
   --engine ENGINE        Force podman or docker instead of auto-detecting.
+  --target TARGET        cli (default), mcp or examples.
   -h, --help             Show the wrapper's help. Use `-- --help` to reach the
                          tool's own help instead.
 ```
 
 | Variable | Effect |
 | --- | --- |
-| `EH_SANDBOX_IMAGE` | Image reference to build and run. Default `encryption-helper:local`. |
+| `EH_SANDBOX_IMAGE` | Image reference to build and run. Default `encryption-helper:local`. The `mcp` and `examples` targets insert their name before the tag, e.g. `encryption-helper-mcp:local`. |
 | `EH_SANDBOX_ENGINE` | Same effect as `--engine`. |
 | `EH_SANDBOX_MOUNT_OPTS` | Extra comma-separated bind-mount options, for example `z` on an SELinux host. |
 | `EH_SANDBOX_FORWARD_ENV` | Space-separated list of additional environment variable names to forward. Variables named by `--passphrase-env` are forwarded automatically. |

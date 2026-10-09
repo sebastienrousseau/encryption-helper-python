@@ -57,6 +57,7 @@
             "action_required",
             "quantum_vulnerable",
             "undetermined",
+            "below_minimum_strength",
             "needs_attention",
             "by_kind"
           ],
@@ -65,6 +66,11 @@
             "action_required": { "type": "integer", "minimum": 0 },
             "quantum_vulnerable": { "type": "integer", "minimum": 0 },
             "undetermined": { "type": "integer", "minimum": 0 },
+            "below_minimum_strength": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Findings below 112-bit security strength, such as RSA-1024. Already disallowed by NIST SP 800-131A, not on a future deadline."
+            },
             "needs_attention": {
               "type": "integer",
               "minimum": 0,
@@ -127,6 +133,7 @@
           "properties": {
             "deprecated_from": { "type": "integer" },
             "disallowed_from": { "type": "integer" },
+            "legacy_disallowed_from": { "type": "integer" },
             "minimum_rsa_key_size_after_2030": { "type": "integer" },
             "references": { "type": "array", "items": { "type": "string" } },
             "validation_note": {

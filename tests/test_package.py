@@ -6,9 +6,11 @@ from __future__ import annotations
 
 import importlib
 import logging
+import re
 import subprocess
 import sys
 from importlib import metadata
+from pathlib import Path
 
 import encryption_helper
 import pytest
@@ -27,21 +29,47 @@ class TestVersion:
         assert encryption_helper.__version__ == metadata.version("encryption-helper")
 
     @source_tree_only
-    def test_release_version_is_declared_in_exactly_one_place(self):
+    def test_no_python_source_hard_codes_the_version(self):
         """Regression test for finding M1.
 
         ``0.0.1`` was declared in ``__init__.py``, ``pyproject.toml`` and
         ``setup.py``, and asserted by a fourth file. Bumping it meant four
-        edits, so it drifted. Only ``pyproject.toml`` may name a version now.
+        edits, so it drifted. Every package now resolves its version from
+        installed metadata, so only a ``pyproject.toml`` may name one.
         """
         version = metadata.version("encryption-helper")
+        # A quoted literal is what a declaration looks like. A bare mention,
+        # such as the branch name ``feat/v0.0.2`` in release tooling, is not.
+        literal = "[\"']" + re.escape(version) + "[\"']"
         found = subprocess.run(  # noqa: S603
-            ["git", "grep", "-lF", version, "--", "encryption_helper", "*.toml"],
+            ["git", "grep", "-lE", literal, "--", "*.py"],
             capture_output=True,
             text=True,
             check=False,
         )
-        assert found.stdout.split() == ["pyproject.toml"]
+        assert found.stdout.split() == []
+
+    @source_tree_only
+    def test_every_distribution_declares_the_same_version(self):
+        """The companion packages are released together, so they move together.
+
+        Independent versioning would be defensible, but it is not what
+        happens here: `packages/*` are built and tagged with the core. A
+        divergence would therefore be an oversight, not a decision.
+        """
+        version = metadata.version("encryption-helper")
+        declared = subprocess.run(
+            ["git", "grep", "-l", "-E", r'^version = "', "--", "*pyproject.toml"],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.split()
+        assert declared, "no pyproject declares a version"
+        for path in declared:
+            text = Path(path).read_text(encoding="utf-8")
+            match = re.search(r'^version = "([^"]+)"', text, re.MULTILINE)
+            assert match is not None, path
+            assert match.group(1) == version, f"{path} declares {match.group(1)}"
 
     def test_version_is_importable(self):
         assert isinstance(encryption_helper.__version__, str)

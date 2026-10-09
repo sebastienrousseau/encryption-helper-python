@@ -2,8 +2,9 @@
 # Copyright 2024-2026 HSBC Group Management Services Limited
 """Find out which keys on disk need migrating, and why.
 
-NIST IR 8547 (initial public draft) deprecates the classical public-key
-algorithms from 2030 and disallows them from 2035. Acting on that begins with
+NIST IR 8547 (initial public draft) disallows the classical public-key
+algorithms after 2035, and deprecates 112-bit keys such as RSA-2048 after
+2030. Acting on that begins with
 scoping: which of the keys, certificates and encrypted files already on disk
 are affected.
 
@@ -103,8 +104,12 @@ def main() -> int:
 
     dates = horizon()
     print(
-        f"deprecated from {dates['deprecated_from']}, "
-        f"disallowed from {dates['disallowed_from']}"
+        f"112-bit keys such as RSA-2048: deprecated after "
+        f"{dates['deprecated_from']}\n"
+        f"all quantum-vulnerable keys:    disallowed after "
+        f"{dates['disallowed_from']}\n"
+        f"below 112-bit, e.g. RSA-1024:   disallowed after "
+        f"{dates['legacy_disallowed_from']}"
     )
     print()
     print("Note:", dates["validation_note"])

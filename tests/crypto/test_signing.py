@@ -118,7 +118,7 @@ PQ_AND_CURVE_KEYS = ["ed448_key", "mldsa_key"]
 
 class TestPostQuantumSigning:
     """ML-DSA (FIPS 204) is the only signature scheme here that survives a
-    quantum computer. The rest are disallowed from 2035 under NIST IR 8547."""
+    quantum computer. The rest are disallowed after 2035 under NIST IR 8547."""
 
     @pytest.mark.parametrize("level", [44, 65, 87])
     def test_every_mldsa_level_round_trips(self, level):

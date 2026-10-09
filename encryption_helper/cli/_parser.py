@@ -398,8 +398,11 @@ def _add_scan(sub: _SubParsers) -> None:
         help="Report cryptographic material on disk and its migration status.",
         description=(
             "Examine files and directory trees for keys, certificates and "
-            "encrypted files, and report which use algorithms that NIST IR "
-            "8547 deprecates from 2030 and disallows from 2035.\n\n"
+            "encrypted files, and report which use quantum-vulnerable "
+            "algorithms: those NIST IR 8547 (initial public draft) disallows "
+            "after 2035, deprecating 112-bit keys such as RSA-2048 after "
+            "2030. Keys below 112-bit strength, such as RSA-1024, are "
+            "flagged as already disallowed.\n\n"
             "Classification is by file contents, not by filename. Symbolic "
             "links are not followed and no passphrase is requested, so an "
             "encrypted private key is reported as needing manual review "

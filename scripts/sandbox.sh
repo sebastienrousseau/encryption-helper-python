@@ -23,8 +23,9 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd -- "${script_dir}/.." && pwd -P)"
 
 # Overridable so that a release pipeline can test a candidate tag without
-# editing this script.
-image="${EH_SANDBOX_IMAGE:-encryption-helper:local}"
+# editing this script. The mcp and examples targets derive their own reference
+# from it, e.g. encryption-helper-mcp:local.
+image_base="${EH_SANDBOX_IMAGE:-encryption-helper:local}"
 
 # Additional bind-mount options, appended to the mount specification. Left
 # empty by default because the useful values are host-specific and some of them
@@ -38,10 +39,12 @@ mount_opts="${EH_SANDBOX_MOUNT_OPTS:-}"
 
 engine_override="${EH_SANDBOX_ENGINE:-}"
 rebuild=0
+target="cli"
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/sandbox.sh [--rebuild] [--engine podman|docker] [--] ARGS...
+Usage: scripts/sandbox.sh [--rebuild] [--engine podman|docker]
+                          [--target cli|mcp|examples] [--] ARGS...
 
 Runs `encryption-helper ARGS...` inside a hardened container. The current
 directory is mounted at /work and is the container's working directory.
@@ -49,6 +52,13 @@ directory is mounted at /work and is the container's working directory.
 Wrapper options (must precede the tool's own arguments):
   --rebuild              Rebuild the image even if it already exists.
   --engine ENGINE        Force `podman` or `docker` instead of auto-detecting.
+  --target TARGET        What to run (default cli):
+                           cli       the encryption-helper command
+                           mcp       the read-only MCP server on stdio, with
+                                     the current directory mounted READ-ONLY
+                           examples  the example suite; ARGS optionally name
+                                     examples to run. No host directory is
+                                     mounted.
   -h, --help             Show this message. Use `-- --help` to reach the
                          tool's own help instead.
 
@@ -98,6 +108,14 @@ output are selected with --in and --out.
   # Pipe through the sandbox. The tool defaults to stdin and stdout.
   cat report.csv | scripts/sandbox.sh encrypt \
     --public-key secrets/service.pub.pem > report.csv.enc
+
+  # Run every example, or just one, without installing anything.
+  scripts/sandbox.sh --target examples
+  scripts/sandbox.sh --target examples 10_counterparty_file_exchange.py
+
+  # Serve the current directory, read-only, to an MCP client. Use this
+  # command line as the client's server "command".
+  scripts/sandbox.sh --target mcp
 USAGE
 }
 
@@ -123,6 +141,18 @@ while [[ $# -gt 0 ]]; do
       engine_override="${1#--engine=}"
       shift
       ;;
+    --target)
+      if [[ $# -lt 2 ]]; then
+        printf 'sandbox: --target requires an argument\n' >&2
+        exit 2
+      fi
+      target="$2"
+      shift 2
+      ;;
+    --target=*)
+      target="${1#--target=}"
+      shift
+      ;;
     -h | --help)
       usage
       exit 0
@@ -137,7 +167,25 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ $# -eq 0 ]]; then
+case "$target" in
+  cli) image="$image_base" ;;
+  mcp | examples)
+    # Insert the target name before the tag: name:tag -> name-target:tag.
+    # A reference without a tag gains the suffix on the name alone.
+    if [[ "${image_base##*/}" == *:* ]]; then
+      image="${image_base%:*}-${target}:${image_base##*:}"
+    else
+      image="${image_base}-${target}"
+    fi
+    ;;
+  *)
+    printf 'sandbox: unknown target %s; expected cli, mcp or examples.\n' "$target" >&2
+    exit 2
+    ;;
+esac
+
+# The tool needs a command. The other targets have a sensible default.
+if [[ "$target" == "cli" && $# -eq 0 ]]; then
   printf 'sandbox: no arguments given; nothing to run.\n\n' >&2
   usage >&2
   exit 2
@@ -188,15 +236,23 @@ fi
 
 if [[ "$rebuild" -eq 1 || "$image_present" -eq 0 ]]; then
   printf 'sandbox: building %s from %s\n' "$image" "${repo_root}/Containerfile" >&2
+  # Build output goes to stderr. On stdout it would be mixed into the tool's
+  # own output -- a piped ciphertext, or the MCP protocol stream.
   "$engine" build \
     --file "${repo_root}/Containerfile" \
+    --target "$target" \
     --tag "$image" \
-    "$repo_root"
+    "$repo_root" >&2
 fi
 
 # --- Run -------------------------------------------------------------------
 
 host_dir="$(pwd -P)"
+# The MCP server only reads, so its mount is read-only: the server's own
+# no-write guarantee is then enforced by the kernel as well as by its tests.
+if [[ "$target" == "mcp" ]]; then
+  mount_opts="ro${mount_opts:+,${mount_opts}}"
+fi
 mount_spec="${host_dir}:/work"
 if [[ -n "$mount_opts" ]]; then
   mount_spec="${mount_spec}:${mount_opts}"
@@ -232,12 +288,6 @@ run_args=(
   # setuid or setgid binary inherited from the base image.
   --security-opt=no-new-privileges
 
-  # The operator's data directory, mounted at the container's working
-  # directory so that relative paths given on the command line resolve as they
-  # would on the host.
-  --volume "$mount_spec"
-  --workdir /work
-
   # The mapped uid may have no entry in the image's /etc/passwd, leaving HOME
   # undefined; the tool expands a leading `~` in path arguments, which would
   # then resolve against `/`. Pointing HOME at the tmpfs makes that expansion
@@ -246,13 +296,22 @@ run_args=(
   --env HOME=/tmp
 )
 
+# The operator's data directory, mounted at the container's working directory
+# so that relative paths given on the command line resolve as they would on
+# the host. The examples need nothing from the host and get no mount at all.
+if [[ "$target" != "examples" ]]; then
+  run_args+=(--volume "$mount_spec" --workdir /work)
+fi
+
 # Keep stdin open so that the tool can read piped input, which is its default
 # for --in. Allocate a terminal only when one is genuinely attached at both
 # ends: a terminal is required for the interactive passphrase prompt, but
 # requesting one when stdout is redirected corrupts binary output with
 # carriage returns.
 run_args+=(--interactive)
-if [[ -t 0 && -t 1 ]]; then
+# Never for mcp: the protocol is JSON on stdio, and a terminal's line
+# discipline would rewrite it.
+if [[ "$target" != "mcp" && -t 0 && -t 1 ]]; then
   run_args+=(--tty)
 fi
 

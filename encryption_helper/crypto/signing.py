@@ -67,8 +67,8 @@ def sign(private_key: PrivateKeyTypes, data: bytes) -> bytes:
     ==================  ==========================================
 
     ML-DSA is the only one of these believed secure against a quantum
-    computer. The others are deprecated from 2030 and disallowed from 2035
-    under NIST IR 8547.
+    computer. NIST IR 8547 (initial public draft) disallows the others after
+    2035, and deprecates 112-bit keys such as RSA-2048 after 2030.
 
     Args:
         private_key: Key to sign with.

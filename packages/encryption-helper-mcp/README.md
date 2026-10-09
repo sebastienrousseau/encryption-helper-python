@@ -64,6 +64,15 @@ with any MCP client:
 the working directory. Paths outside it are refused. Set it to the narrowest
 directory that contains what needs assessing.
 
+> [!CAUTION]
+> Tool results include file paths and certificate subjects, and the client
+> passes them to its model. Follow your organisation's policy on what may be
+> shared with an AI service, and choose `--root` accordingly.
+
+To run the server without installing Python, use the container sandbox:
+`scripts/sandbox.sh --target mcp` serves the current directory read-only. See
+[docs/SANDBOX.md](../../docs/SANDBOX.md#38-the-mcp-server).
+
 ## Tools
 
 | Tool | Answers | Reads from disk |

@@ -254,8 +254,8 @@ class TestInternalFailureBranches:
 class TestKeyEncapsulationMechanisms:
     """Every mechanism must round-trip and be self-identifying.
 
-    NIST IR 8547 deprecates RSA and the elliptic curves from 2030 and
-    disallows them from 2035, so ML-KEM is not optional for keys with a long
+    NIST IR 8547 (initial public draft) disallows RSA and the elliptic curves
+    after 2035, so ML-KEM is not optional for keys with a long
     service life. The container records which mechanism produced it, so a
     recipient never has to guess and an old ciphertext stays readable.
     """

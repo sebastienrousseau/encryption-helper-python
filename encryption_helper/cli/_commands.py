@@ -46,6 +46,8 @@ from ..keys import (
 from ..policy import (
     NIST_DEPRECATED_FROM,
     NIST_DISALLOWED_FROM,
+    NIST_LEGACY_DISALLOWED_FROM,
+    assess,
     horizon,
     purposes,
 )
@@ -88,12 +90,8 @@ def _capabilities() -> dict[str, Any]:
             name: {
                 "quantum_vulnerable": name in QUANTUM_VULNERABLE,
                 "post_quantum": name in POST_QUANTUM,
-                "deprecated_from": (
-                    NIST_DEPRECATED_FROM if name in QUANTUM_VULNERABLE else None
-                ),
-                "disallowed_from": (
-                    NIST_DISALLOWED_FROM if name in QUANTUM_VULNERABLE else None
-                ),
+                "deprecated_from": assess(name).deprecated_from,
+                "disallowed_from": assess(name).disallowed_from,
                 "can_encrypt": purposes(name)["encrypt"],
                 "can_sign": purposes(name)["sign"],
             }
@@ -120,12 +118,15 @@ def _cmd_capabilities(args: argparse.Namespace) -> int:
         "-" * 58,
     ]
     for name, info in caps["algorithms"].items():
-        horizon = (
-            f"deprecated {info['deprecated_from']}, disallowed "
-            f"{info['disallowed_from']}"
-            if info["quantum_vulnerable"]
-            else "no deadline"
-        )
+        if not info["quantum_vulnerable"]:
+            horizon = "no deadline"
+        elif info["deprecated_from"] is not None:
+            horizon = (
+                f"2048-bit: deprecated after {info['deprecated_from']}; "
+                f"all: disallowed after {info['disallowed_from']}"
+            )
+        else:
+            horizon = f"disallowed after {info['disallowed_from']}"
         rows.append(
             f"{name:<10} {'yes' if info['can_encrypt'] else '-':>8} "
             f"{'yes' if info['can_sign'] else '-':>5} "
@@ -133,8 +134,9 @@ def _cmd_capabilities(args: argparse.Namespace) -> int:
         )
     rows += [
         "",
-        "Horizons are from NIST IR 8547. Algorithms with a deadline should not",
-        "be chosen for key material that must outlive it.",
+        "Horizons are from NIST IR 8547 (initial public draft). Algorithms",
+        "with a deadline should not be chosen for key material that must",
+        "outlive it.",
     ]
     _emit(args, "\n".join(rows), caps)
     return EXIT_OK
@@ -149,16 +151,26 @@ def _warn_if_quantum_vulnerable(args: argparse.Namespace, algorithm: str) -> Non
     """
     if args.quiet or algorithm not in QUANTUM_VULNERABLE:
         return
+    key_size = args.key_size if algorithm == "rsa" else None
+    posture = assess(algorithm, key_size=key_size)
+    if posture.deprecated_from is not None:
+        dates = (
+            f"deprecates it after {posture.deprecated_from} and disallows it\n"
+            f"      after {posture.disallowed_from}"
+        )
+    else:
+        dates = f"disallows it after {posture.disallowed_from}"
+    label = f"rsa-{key_size}" if key_size else algorithm
     print(
-        f"note: {algorithm} would be broken by a cryptanalytically relevant "
+        f"note: {label} would be broken by a cryptanalytically relevant "
         "quantum computer,\n"
         "      which does not exist today. NIST IR 8547 (initial public "
-        "draft) deprecates it\n"
-        f"      from {NIST_DEPRECATED_FROM} and disallows it from "
-        f"{NIST_DISALLOWED_FROM}. Data encrypted now can be recorded\n"
-        "      and decrypted later, so where confidentiality must outlive "
-        "those dates use\n"
-        "      --algorithm mlkem (encryption) or mldsa (signing).",
+        f"draft) {dates}.\n"
+        "      Data encrypted now can be recorded and decrypted later, so "
+        "where\n"
+        "      confidentiality must outlive those dates use --algorithm "
+        "mlkem\n"
+        "      (encryption) or mldsa (signing).",
         file=sys.stderr,
     )
 
@@ -422,7 +434,7 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
         "file should be re-encrypted if its confidentiality must outlast that "
         "point."
         if info.quantum_vulnerable
-        else "Not vulnerable to a quantum computer."
+        else "Uses a NIST post-quantum standard. No migration is required."
     )
     rows = [
         f"Format version:     {info.format_version}"
@@ -454,7 +466,13 @@ def _scan_rows(findings: list[Finding], summary: dict[str, Any]) -> list[str]:
         algorithm = finding.algorithm or "undetermined"
         if finding.key_size:
             algorithm = f"{algorithm}-{finding.key_size}"
-        if finding.action_required:
+        legacy = (
+            finding.disallowed_from is not None
+            and finding.disallowed_from <= NIST_LEGACY_DISALLOWED_FROM
+        )
+        if finding.action_required and legacy:
+            action = f"replace now with {' or '.join(finding.replacements)}"
+        elif finding.action_required:
             action = f"migrate to {' or '.join(finding.replacements)}"
         elif finding.undetermined:
             action = "review manually"
@@ -468,10 +486,17 @@ def _scan_rows(findings: list[Finding], summary: dict[str, Any]) -> list[str]:
         f"{summary['examined']} examined, "
         f"{summary['action_required']} needing migration, "
         f"{summary['undetermined']} needing manual review.",
+    ]
+    if summary["below_minimum_strength"]:
+        rows.append(
+            f"{summary['below_minimum_strength']} below 112-bit strength: already "
+            "disallowed by NIST SP 800-131A. Replace these first."
+        )
+    rows += [
         "",
-        f"Algorithms with a deadline are deprecated from "
-        f"{NIST_DEPRECATED_FROM} and disallowed from {NIST_DISALLOWED_FROM} "
-        "by NIST IR 8547.",
+        "NIST IR 8547 (initial public draft) deprecates 112-bit keys such as",
+        f"RSA-2048 after {NIST_DEPRECATED_FROM}, and disallows all of these "
+        f"algorithms after {NIST_DISALLOWED_FROM}.",
     ]
     return rows
 

@@ -20,6 +20,16 @@ Before filing, please check whether your question is answered by the Security
 section of the README — most questions about file permissions, passphrases and
 key formats are covered there.
 
+## What not to post
+
+Issues and discussions are public. **Never include private keys,
+passphrases, account or payment details, or client data**, even in a log
+excerpt. Redact paths and certificate subjects if they identify a system.
+
+Questions about HSBC banking services, connectivity or file-format
+specifications, or your organisation's integration with HSBC, are not
+answered here. Please use your usual HSBC contacts.
+
 ## Security vulnerabilities
 
 **Do not open a public issue.** Follow [SECURITY.md](./SECURITY.md), which

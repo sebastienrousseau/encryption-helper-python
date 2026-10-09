@@ -73,7 +73,7 @@ bench: ## Indicative benchmarks, not a gate
 
 .PHONY: examples
 examples: ## Run every example
-	@for f in examples/*.py; do echo "--- $$f"; $(PY) $(PYTHON) "$$f" || exit 1; done
+	@for f in examples/[0-9]*.py; do echo "--- $$f"; $(PY) $(PYTHON) "$$f" || exit 1; done
 
 .PHONY: sbom
 sbom: ## Generate a CycloneDX SBOM
@@ -99,6 +99,10 @@ sandbox: ## Build the container sandbox image and smoke-test it
 	@# then runs `capabilities` inside the hardened container as a smoke test.
 	@# See docs/SANDBOX.md. Requires network access for the base image.
 	./scripts/sandbox.sh --rebuild capabilities
+
+.PHONY: sandbox-examples
+sandbox-examples: ## Run the example suite inside the container sandbox
+	./scripts/sandbox.sh --rebuild --target examples
 
 .PHONY: clean
 clean: ## Remove build and cache artefacts

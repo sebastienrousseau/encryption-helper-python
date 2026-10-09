@@ -171,8 +171,8 @@ class TestPostQuantumGeneration:
 
 class TestQuantumVulnerabilityMetadata:
     """The horizon is a published date, so the package records it rather than
-    leaving users to discover it. NIST IR 8547: deprecated 2030, disallowed
-    2035."""
+    leaving users to discover it. NIST IR 8547: disallowed after 2035, and
+    112-bit keys deprecated after 2030."""
 
     def test_classical_algorithms_are_marked_vulnerable(self):
         from encryption_helper.keys import QUANTUM_VULNERABLE

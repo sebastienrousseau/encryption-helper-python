@@ -164,7 +164,7 @@ jobs:
       # the docs-accuracy suite checks the README against the code.
       - name: Run every example
         run: |
-          for example in examples/*.py; do
+          for example in examples/[0-9]*.py; do
             echo "--- $example"
             python "$example"
           done
@@ -292,12 +292,38 @@ jobs:
           name: distribution
           path: dist/
 
+  # The container sandbox is the documented way to run the tool, the MCP
+  # server and the examples without installing anything, so it is built and
+  # exercised here exactly as an operator would use it: through the wrapper,
+  # with its hardening flags.
+  sandbox:
+    name: Container sandbox
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: CLI image
+        run: ./scripts/sandbox.sh --engine docker --rebuild --json capabilities
+      - name: Runs as a non-root user
+        run: |
+          uid="$(docker run --rm --entrypoint id encryption-helper:local -u)"
+          test "$uid" = 10001 || { echo "image runs as uid $uid"; exit 1; }
+      - name: Example suite in the sandbox
+        run: ./scripts/sandbox.sh --engine docker --rebuild --target examples
+      - name: MCP server in the sandbox, over stdio
+        run: |
+          printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+            | ./scripts/sandbox.sh --engine docker --rebuild --target mcp > mcp.out
+          python3 -c "import json,sys; r=[json.loads(l) for l in open('mcp.out')]; t=[x['name'] for x in r[1]['result']['tools']]; print(t); sys.exit(0 if 'scan_directory' in t else 1)"
+
   # A single required check to protect the branch with, so the matrix can grow
   # without editing branch protection each time.
   ci-ok:
     name: CI passed
     if: always()
-    needs: [lint, types, test, mutation, mcp, fuzz, examples, security, build]
+    needs: [lint, types, test, mutation, mcp, fuzz, examples, security, build, sandbox]
     runs-on: ubuntu-latest
     steps:
       - name: Fail if any dependency failed

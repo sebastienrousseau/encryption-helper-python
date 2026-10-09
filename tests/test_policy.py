@@ -90,7 +90,7 @@ class TestClassicalAlgorithms:
         assert posture.disallowed_from == NIST_DISALLOWED_FROM
 
     def test_rsa_below_3072_is_deprecated_on_the_earlier_date(self):
-        """RSA-2048 is 112-bit security, which NIST withdraws from 2030."""
+        """RSA-2048 is 112-bit security, which NIST deprecates after 2030."""
         posture = assess("rsa", key_size=2048)
         assert posture.deprecated_from == NIST_DEPRECATED_FROM
         assert "112-bit security strength" in posture.rationale

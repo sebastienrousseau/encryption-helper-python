@@ -121,8 +121,10 @@ SUPPORTED_ALGORITHMS: Final = (
 
 #: Algorithms broken by a sufficiently large quantum computer.
 #:
-#: NIST IR 8547 deprecates 112-bit-security public-key algorithms (RSA-2048,
-#: P-256) from 2030 and disallows all of these from 2035. CNSA 2.0 is
+#: NIST IR 8547 (initial public draft) deprecates 112-bit-security public-key
+#: algorithms such as RSA-2048 after 2030, and disallows all of these after
+#: 2035 whatever their strength. P-256, Ed25519 and X25519 are 128-bit and so
+#: skip the deprecation step. CNSA 2.0 is
 #: stricter still for national security systems. Keys generated today for
 #: long-lived credentials will outlive those dates, so :func:`generate`
 #: records which choices are affected and the CLI says so at generation time.

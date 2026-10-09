@@ -22,6 +22,13 @@
 #
 #   ./scripts/sandbox.sh keygen --algorithm ed25519 --no-passphrase --name svc
 #
+# Three targets share one runtime base. The default is the command-line tool;
+# the others are selected with `--target`, or with the wrapper's `--target`:
+#
+#   cli       (default) the `encryption-helper` command
+#   mcp       the read-only Model Context Protocol server, over stdio
+#   examples  every script in examples/, run in order, then the container exits
+#
 # This image deliberately has no HEALTHCHECK. The entry point is a one-shot
 # command-line tool that exits when its work is done, not a long-running
 # service, so there is no steady state for a probe to observe.
@@ -88,6 +95,16 @@ COPY encryption_helper ./encryption_helper
 # dependency resolution and cannot silently acquire a package that was not
 # present at build time.
 RUN python -m pip wheel --wheel-dir /wheels /src
+
+# The MCP server's only dependency is the package just built, so it is built
+# with `--no-deps`. Resolving it against an index could otherwise substitute a
+# different published release of `encryption-helper` for the one built here.
+COPY packages/encryption-helper-mcp /src-mcp
+RUN python -m pip wheel --no-deps --wheel-dir /wheels-mcp /src-mcp
+
+# Only the numbered examples and their shared helper. Copied here so the
+# `examples` target takes them from a build stage, like everything else.
+COPY examples/_workspace.py examples/[0-9]*.py /examples/
 
 # ---------------------------------------------------------------------------
 # Stage 2: runtime
@@ -171,3 +188,47 @@ USER 10001:10001
 # cryptographic work, which is the wrong default for a tool that writes key
 # material.
 ENTRYPOINT ["encryption-helper"]
+
+# ---------------------------------------------------------------------------
+# Target: mcp
+# ---------------------------------------------------------------------------
+#
+# The read-only MCP server. It reads within `--root` and nothing else; the
+# wrapper mounts the host directory there read-only, so the server's own
+# no-write guarantee is backed by the kernel as well as by its tests.
+FROM runtime AS mcp
+USER 0:0
+COPY --from=build /wheels-mcp /tmp/wheels-mcp
+RUN python -m pip install --no-index --no-deps /tmp/wheels-mcp/*.whl \
+ && rm -rf /tmp/wheels-mcp
+USER 10001:10001
+LABEL org.opencontainers.image.title="encryption-helper-mcp" \
+      org.opencontainers.image.description="Read-only Model Context Protocol server for post-quantum migration scoping"
+ENTRYPOINT ["encryption-helper-mcp", "--root", "/work"]
+
+# ---------------------------------------------------------------------------
+# Target: examples
+# ---------------------------------------------------------------------------
+#
+# Runs the example suite in the same hardened sandbox the tool runs in, so a
+# reviewer can watch every capability work without installing anything. The
+# examples write only to temporary directories under /tmp, which the wrapper
+# mounts as a tmpfs, and remove them on exit. No host directory is mounted.
+#
+# With no arguments every example runs in order. Name one to run only that:
+#
+#   ./scripts/sandbox.sh --target examples 10_counterparty_file_exchange.py
+FROM mcp AS examples
+COPY --from=build /examples /opt/examples
+LABEL org.opencontainers.image.title="encryption-helper-examples" \
+      org.opencontainers.image.description="Runnable demonstrations of encryption-helper in a sandbox"
+WORKDIR /opt/examples
+ENTRYPOINT ["/bin/sh", "-c", "set -e; if [ \"$#\" -eq 0 ]; then set -- [0-9]*.py; fi; for f in \"$@\"; do echo \"--- $f\"; python \"/opt/examples/${f##*/}\"; done", "examples"]
+
+# ---------------------------------------------------------------------------
+# Target: cli (default)
+# ---------------------------------------------------------------------------
+#
+# Last, so that a build without `--target` produces the command-line image
+# exactly as before.
+FROM runtime AS cli

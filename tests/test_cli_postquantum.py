@@ -2,10 +2,10 @@
 # Copyright 2024-2026 HSBC Group Management Services Limited
 """CLI coverage for the post-quantum algorithms and the agility surface.
 
-NIST IR 8547 deprecates the classical algorithms from 2030 and disallows them
-from 2035. The CLI has to make that discoverable without the user reading a
-standard, and it has to make the post-quantum choice as easy as the classical
-one.
+NIST IR 8547 disallows the classical algorithms after 2035, and deprecates
+112-bit keys such as RSA-2048 after 2030. The CLI has to make that
+discoverable without the user reading a standard, and it has to make the
+post-quantum choice as easy as the classical one.
 """
 
 from __future__ import annotations

@@ -26,13 +26,15 @@
 
 **Getting started**
 
-- [Why this exists](#why-this-exists) — the problem it solves, and the 2035 deadline
-- [Installation](#installation) — pip, Poetry, from source
-- [Quick start](#quick-start) — generate, encrypt, sign in three commands
+- [Why this exists](#why-this-exists) — who it is for, and the 2030/2035 dates
+- [Installation](#installation) — pip, Poetry, from source, or a container
+- [Quick start](#quick-start) — generate, encrypt, decrypt in three commands
+- [Examples](#examples) — eleven runnable scenarios, from key generation to partner file exchange
 
 **Command line**
 
-- [Commands](#commands) — `keygen`, `encrypt`, `decrypt`, `sign`, `verify`, `fingerprint`, `convert`, `capabilities`
+- [Commands](#commands) — `keygen`, `encrypt`, `decrypt`, `sign`, `verify`, `fingerprint`, `convert`, `inspect`, `scan`, `capabilities`
+- [Migration planning](#migration-planning) — inventory keys on disk and see what is affected, and when
 - [Algorithms](#algorithms) — what to pick, and what expires when
 - [Passphrases](#passphrases) — source semantics, pinned
 - [Global options and exit codes](#global-options-and-exit-codes)
@@ -44,6 +46,8 @@
 
 **Operational**
 
+- [Container sandbox](#container-sandbox) — run everything without installing Python
+- [MCP server](#mcp-server) — read-only migration scoping for an AI assistant
 - [Security](#security) — guarantees, cryptographic choices, threat model
 - [Performance](#performance) — measured costs and memory behaviour
 - [Development](#development) — tests, fuzzing, benchmarks, examples
@@ -62,21 +66,44 @@
 
 ## Why this exists
 
-`openssl genrsa` prints your private key to the terminal and writes files at
-whatever the umask allows. That is fine for interactive use and awkward
-everywhere else — shared machines, CI runners, containers.
+Organisations that exchange files with banks, payment providers and trading
+partners need asymmetric keys: to encrypt what they send, to sign it, and to
+check what they receive. The people doing this work are usually treasury
+operations, integration and platform teams rather than cryptographers, and
+the common failures are operational ones. A private key gets printed into a
+CI log. A key file is left readable by other users. A re-run overwrites a
+production key. A public key arrives by email and nobody checks it.
 
-This package does the same job with defaults that survive those environments,
-a typed Python API, and the post-quantum algorithms.
+Encryption Helper is built around those failures. It never prints or logs a
+private key, it writes key files owner-only whatever the umask, it refuses to
+overwrite an existing key unless asked, and it gives every public key a
+fingerprint you can confirm with your counterparty over a separate channel.
+
+It also helps with the planning question now in front of most security and
+risk teams: **which of our keys are affected by the move to post-quantum
+cryptography, and by when?** `encryption-helper scan` answers that for the
+keys, certificates and encrypted files on disk.
 
 > [!IMPORTANT]
-> **RSA and the elliptic curves have a deadline.** NIST IR 8547 deprecates
-> RSA-2048 and P-256 from **2030** and disallows RSA-3072 and P-384 from
-> **2035**. A key you generate today for a long-lived credential outlives both
-> dates. For that material use `--algorithm mlkem` (encryption) or
-> `--algorithm mldsa` (signing), which are FIPS 203 and FIPS 204.
+> **Classical public-key algorithms have published end dates.** NIST IR 8547
+> (initial public draft) deprecates 112-bit keys such as **RSA-2048 after
+> 2030**, and disallows RSA and elliptic-curve algorithms of every size
+> **after 2035**. Keys below 112-bit strength, such as RSA-1024, are already
+> disallowed under NIST SP 800-131A.
 >
-> Run `encryption-helper capabilities` to see where you stand.
+> Data encrypted today can be recorded and decrypted later, once a
+> cryptanalytically relevant quantum computer exists. Where confidentiality or
+> a signature must remain trustworthy past those dates, use
+> `--algorithm mlkem` (encryption, FIPS 203) or `--algorithm mldsa`
+> (signing, FIPS 204).
+>
+> Run `encryption-helper capabilities` for the table, or
+> `encryption-helper scan PATH` to assess keys you already hold.
+
+**What it is not.** It is not an HSM, a key management service or a PKI, and
+it does not replace the file formats a counterparty or payment channel
+specifies. See [Interoperability](#interoperability) and the
+[threat model](#threat-model).
 
 ---
 
@@ -101,6 +128,9 @@ pip install .
 ```
 
 </details>
+
+Where installing Python packages is not permitted, run it in a container
+instead. See [Container sandbox](#container-sandbox).
 
 ---
 
@@ -133,6 +163,32 @@ Encrypted:     yes
 
 ---
 
+## Examples
+
+Each example is a short script that runs on its own, prints what it shows,
+and removes everything it writes. All of them run in CI.
+
+| Example | Scenario |
+| ------- | -------- |
+| [`01_generate_key_pair.py`](./examples/01_generate_key_pair.py) | Generate, serialise and store a key pair safely |
+| [`02_encrypt_and_decrypt.py`](./examples/02_encrypt_and_decrypt.py) | Encrypt data of any size to a public key |
+| [`03_sign_and_verify.py`](./examples/03_sign_and_verify.py) | Sign and verify with RSA-PSS, Ed25519 and ECDSA |
+| [`04_load_and_convert.py`](./examples/04_load_and_convert.py) | Load keys in any encoding and convert between them |
+| [`05_post_quantum.py`](./examples/05_post_quantum.py) | ML-KEM encryption and ML-DSA signing |
+| [`06_large_files.py`](./examples/06_large_files.py) | Stream a file too large for memory |
+| [`07_inventory_and_migration.py`](./examples/07_inventory_and_migration.py) | Scan a directory and plan a migration |
+| [`08_key_rotation.py`](./examples/08_key_rotation.py) | Rotate a key without losing access to existing data |
+| [`09_automation_with_json.py`](./examples/09_automation_with_json.py) | Drive the CLI from a script through the JSON contract |
+| [`10_counterparty_file_exchange.py`](./examples/10_counterparty_file_exchange.py) | Send a signed, encrypted file to a counterparty, and what that stops |
+| [`11_mcp_assistant_session.py`](./examples/11_mcp_assistant_session.py) | Query the read-only MCP server as an assistant would |
+
+```bash
+make examples                                   # on the host
+./scripts/sandbox.sh --target examples          # in the container sandbox, nothing installed
+```
+
+---
+
 ## Commands
 
 | Command | Purpose |
@@ -144,6 +200,8 @@ Encrypted:     yes
 | `encryption-helper verify` | Verify a signature |
 | `encryption-helper fingerprint` | Print a public key fingerprint |
 | `encryption-helper convert` | Convert between PEM, DER and OpenSSH |
+| `encryption-helper inspect` | Report which algorithms protect an encrypted file, without decrypting it |
+| `encryption-helper scan` | Inventory keys, certificates and encrypted files under a path |
 | `encryption-helper capabilities` | List algorithms and their deprecation horizon |
 
 ### keygen
@@ -158,10 +216,14 @@ An **unencrypted private key is never the default**. In a non-interactive
 context you must choose:
 
 ```bash
-export KEY_PASSPHRASE='correct horse battery staple'
+# Read the passphrase without echoing it or writing it to shell history.
+read -rsp 'Passphrase: ' KEY_PASSPHRASE && export KEY_PASSPHRASE
 encryption-helper keygen --out-dir ./secrets --passphrase-env KEY_PASSPHRASE
 
-# or, deliberately:
+# In CI, take it from the platform's secret store rather than a literal, and
+# map it to the variable named here.
+
+# or, deliberately, for test material only:
 encryption-helper keygen --out-dir ./secrets --no-passphrase
 ```
 
@@ -175,16 +237,39 @@ and `--force` backs the old files up to timestamped siblings first.
 $ encryption-helper capabilities
 algorithm   encrypt  sign  post-quantum  horizon
 ----------------------------------------------------------
-rsa             yes   yes            no  deprecated 2030, disallowed 2035
-ed25519           -   yes            no  deprecated 2030, disallowed 2035
-ed448             -   yes            no  deprecated 2030, disallowed 2035
-ecdsa             -   yes            no  deprecated 2030, disallowed 2035
-x25519          yes     -            no  deprecated 2030, disallowed 2035
+rsa             yes   yes            no  2048-bit: deprecated after 2030; all: disallowed after 2035
+ed25519           -   yes            no  disallowed after 2035
+ed448             -   yes            no  disallowed after 2035
+ecdsa             -   yes            no  disallowed after 2035
+x25519          yes     -            no  disallowed after 2035
 mlkem           yes     -           yes  no deadline
 mldsa             -   yes           yes  no deadline
 ```
 
+NIST's dates follow each key's classical security strength. RSA-2048 is 112-bit,
+so it is deprecated first; RSA-3072, P-256, Ed25519 and X25519 are 128-bit or
+stronger and move straight to disallowed after 2035.
+
 `--json` gives the same thing machine-readably, for a cryptographic inventory.
+
+### inspect
+
+Reports the key-establishment mechanism and cipher of an encrypted file from
+its header alone. No private key is needed and nothing is decrypted.
+
+```console
+$ encryption-helper inspect --in statement.enc
+Format version:     1
+Key establishment:  ml-kem-768  [FIPS 203]
+Content encryption: aes-256-gcm-segmented
+Segmented:          yes
+
+Uses a NIST post-quantum standard. No migration is required.
+```
+
+### scan
+
+See [Migration planning](#migration-planning).
 
 ### Pipelines
 
@@ -211,6 +296,48 @@ Updates go to stderr, throttled to five per second, so stdout stays usable
 and the reporting costs nothing measurable. Reading from a pipe the total is
 unknown, so the percentage and ETA are omitted rather than guessed.
 `--quiet` suppresses it.
+
+---
+
+## Migration planning
+
+A post-quantum migration starts with scoping: finding the keys, certificates
+and encrypted files you already hold, and which of them are affected.
+
+```console
+$ encryption-helper scan ./estate
+file                                     kind                   algorithm    action
+--------------------------------------------------------------------------------------
+estate/legacy-h2h.pub.pem                public-key             rsa-1024     replace now with mlkem or mldsa
+estate/partner-sftp.pub.pem              public-key             rsa-2048     migrate to mlkem or mldsa
+estate/statement.enc                     container              ml-kem-768   none
+estate/statements.pub.pem                public-key             mlkem-768    none
+
+4 examined, 2 needing migration, 0 needing manual review.
+1 below 112-bit strength: already disallowed by NIST SP 800-131A. Replace these first.
+```
+
+- Files are classified by **content**, not by name. Symbolic links are not
+  followed.
+- **No passphrase is ever requested.** An encrypted private key is reported
+  as needing manual review, not as safe.
+- An RSA key can both encrypt and sign, so it has two possible successors.
+  The scanner names both rather than guess.
+- `--json` emits the versioned contract in
+  [`docs/schemas/cli-output-v1.json`](./docs/schemas/cli-output-v1.json), for
+  an inventory system or CMDB.
+- `--fail-on-finding` exits non-zero when anything needs attention, so a
+  pipeline can stop new quantum-vulnerable material being committed.
+
+The same assessment is available from Python (`encryption_helper.scan`,
+`encryption_helper.assess`) and, read-only, to an AI assistant through the
+[MCP server](#mcp-server).
+
+> [!NOTE]
+> The dates come from NIST publications and are reported as NIST states them.
+> IR 8547 is an initial public draft and may change. Your own regulators,
+> sector bodies or counterparties may set different timetables; treat this
+> output as an input to your migration plan, not as compliance advice.
 
 ---
 
@@ -261,6 +388,18 @@ nonce reuse, reordering, segment dropping and truncation.
 > needs a composite key container, and inventing one without external
 > cryptographic review would be false confidence. ML-KEM alone is
 > FIPS-approved and satisfies the horizon.
+
+### Interoperability
+
+The container above is **this library's own format**. It is not OpenPGP,
+CMS/PKCS#7 or JWE, and other tools cannot decrypt it. Both sender and
+receiver need `encryption-helper` 0.0.2 or later.
+
+That suits exchanges where both ends are under your control, or agreed
+bilaterally. Where a bank, payment channel or partner specifies a format,
+use the format they specify. The keys themselves are standard: PKCS#8 and
+SubjectPublicKeyInfo PEM or DER, and OpenSSH where one exists. `convert`
+moves between them.
 
 ---
 
@@ -364,6 +503,52 @@ message contains key material, passphrases or plaintext.
 A key that can *never* decrypt raises `InvalidArgumentError` — a programming
 mistake. A key that *could* decrypt but does not match the container raises
 `DecryptionError`, because that is indistinguishable from a tampered header.
+
+---
+
+## Container sandbox
+
+[`scripts/sandbox.sh`](./scripts/sandbox.sh) runs the tool in a throwaway
+container with Podman or Docker. The host needs a container engine and nothing
+else: no Python and no package installation.
+
+```bash
+./scripts/sandbox.sh --json capabilities                 # the CLI
+./scripts/sandbox.sh scan . --fail-on-finding
+./scripts/sandbox.sh --target examples                   # every example
+./scripts/sandbox.sh --target mcp                        # the MCP server, on stdio
+```
+
+The container has no network, a read-only root filesystem, no Linux
+capabilities and no route to privilege escalation. It runs as a non-root user
+and sees one host directory: the current one, mounted read-only for the MCP
+server and not mounted at all for the examples. Passphrases are forwarded by
+variable name, never on the command line. Full details, including what the
+sandbox does not protect against, are in [docs/SANDBOX.md](./docs/SANDBOX.md).
+
+---
+
+## MCP server
+
+[`encryption-helper-mcp`](./packages/encryption-helper-mcp/README.md) is a
+[Model Context Protocol](https://modelcontextprotocol.io) server that lets an
+AI assistant answer migration-scoping questions: which keys under a directory
+are affected, when, and what replaces them.
+
+It is **read-only by design**. No tool can generate, encrypt, decrypt or sign,
+and none accepts a passphrase, because an assistant's context leaves your
+machine. Tests enforce this boundary.
+
+```bash
+pip install encryption-helper-mcp
+encryption-helper-mcp --root /path/to/inspect
+```
+
+> [!CAUTION]
+> Scan results include file paths and certificate subjects, and those are sent
+> to whichever model the assistant uses. Point the server's root directory at the narrowest
+> directory that answers the question, and follow your organisation's policy
+> on what may be shared with an AI service.
 
 ---
 
@@ -498,14 +683,15 @@ Run them yourself: `python benches/bench_crypto.py --quick`
 poetry install
 poetry run pre-commit install
 
-poetry run pytest                               # 557 tests, 100% branch coverage
+make check                                      # everything CI runs
+poetry run pytest                               # the suite, 100% branch coverage
 poetry run ruff check . && poetry run ruff format --check .
 poetry run mypy --strict encryption_helper
 poetry run bandit -c pyproject.toml -r encryption_helper
 ```
 
 ```bash
-python examples/01_generate_key_pair.py         # every example runs in CI
+make examples                                   # every example runs in CI
 python fuzz/run_fuzz.py --iterations 50000      # no fuzzing engine required
 python benches/bench_crypto.py --quick
 ```
@@ -535,6 +721,19 @@ What will not change without a major version once `1.0.0` lands: the container
 format for existing `kem_id` values, the exception hierarchy, and exit codes.
 New mechanisms are added by allocating a new identifier, never by changing an
 existing one — an old ciphertext stays readable.
+
+---
+
+## Support
+
+This is open-source software, provided under the Apache License 2.0 without
+warranty. It is not an HSBC banking product or service, and using it does not
+change the terms of any agreement you have with HSBC.
+
+Questions and bugs go to [GitHub issues](https://github.com/hsbc/encryption-helper-python/issues);
+see [SUPPORT.md](./SUPPORT.md). Report vulnerabilities privately through
+[SECURITY.md](./SECURITY.md). **Never post keys, passphrases, account details
+or client data in an issue.**
 
 ---
 

@@ -2,9 +2,10 @@
 # Copyright 2024-2026 HSBC Group Management Services Limited
 """Post-quantum encryption and signing with ML-KEM and ML-DSA.
 
-NIST IR 8547 deprecates RSA and the elliptic curves from 2030 and disallows
-them from 2035. For key material that must outlive those dates, use ML-KEM
-(FIPS 203) for encryption and ML-DSA (FIPS 204) for signing.
+NIST IR 8547 (initial public draft) disallows RSA and the elliptic curves
+after 2035, and deprecates 112-bit keys such as RSA-2048 after 2030. For key
+material that must outlive those dates, use ML-KEM (FIPS 203) for encryption
+and ML-DSA (FIPS 204) for signing.
 
 Run:
     python examples/05_post_quantum.py
@@ -33,7 +34,7 @@ def main() -> int:
     destination = workspace()
 
     print(f"post-quantum:       {', '.join(sorted(POST_QUANTUM))}")
-    print(f"deadline from 2035: {', '.join(sorted(QUANTUM_VULNERABLE))}")
+    print(f"disallowed after 2035: {', '.join(sorted(QUANTUM_VULNERABLE))}")
     print()
 
     # --- Encryption: ML-KEM-768 --------------------------------------------
