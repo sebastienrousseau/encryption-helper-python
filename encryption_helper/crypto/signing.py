@@ -14,6 +14,8 @@ provided for the cases where a boolean genuinely is what you want.
 
 from __future__ import annotations
 
+from typing import Final
+
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import (
@@ -45,10 +47,33 @@ _MLDSA_PUBLIC = (
     mldsa.MLDSA87PublicKey,
 )
 
-_PSS_PADDING = padding.PSS(
-    mgf=padding.MGF1(hashes.SHA256()),
-    salt_length=padding.PSS.DIGEST_LENGTH,
-)
+#: RSA moduli at or above this size are signed with SHA-384. CNSA pairs
+#: RSA-3072 and larger with SHA-384; SHA-256 would cap a 4096-bit key's
+#: signature at the hash's 128-bit collision resistance.
+_RSA_SHA384_FROM: Final = 3072
+
+#: ECDSA hash by curve size, matched so the hash is never the weak link.
+_ECDSA_HASH_BITS: Final = {384: hashes.SHA384, 521: hashes.SHA512}
+
+
+def _rsa_hash(key: rsa.RSAPrivateKey | rsa.RSAPublicKey) -> hashes.HashAlgorithm:
+    if key.key_size >= _RSA_SHA384_FROM:
+        return hashes.SHA384()
+    return hashes.SHA256()
+
+
+def _pss(algorithm: hashes.HashAlgorithm) -> padding.PSS:
+    """RSA-PSS whose mask generation uses the same hash as the message."""
+    return padding.PSS(
+        mgf=padding.MGF1(algorithm),
+        salt_length=padding.PSS.DIGEST_LENGTH,
+    )
+
+
+def _ecdsa(
+    key: ec.EllipticCurvePrivateKey | ec.EllipticCurvePublicKey,
+) -> ec.ECDSA:
+    return ec.ECDSA(_ECDSA_HASH_BITS.get(key.curve.key_size, hashes.SHA256)())
 
 
 def sign(private_key: PrivateKeyTypes, data: bytes) -> bytes:
@@ -59,12 +84,19 @@ def sign(private_key: PrivateKeyTypes, data: bytes) -> bytes:
     ==================  ==========================================
     Key type            Signature scheme
     ==================  ==========================================
-    RSA                 RSA-PSS, SHA-256, salt length = digest
+    RSA-2048            RSA-PSS, SHA-256, salt length = digest
+    RSA-3072, 4096      RSA-PSS, SHA-384, salt length = digest
     Ed25519             Ed25519 (PureEdDSA)
     Ed448               Ed448 (PureEdDSA)
-    ECDSA               ECDSA with SHA-256
+    ECDSA P-256         ECDSA with SHA-256
+    ECDSA P-384         ECDSA with SHA-384
+    ECDSA P-521         ECDSA with SHA-512
     ML-DSA 44/65/87     ML-DSA (FIPS 204), hedged
     ==================  ==========================================
+
+    The hash follows the key's strength, so it is never the weakest part:
+    SHA-256 under a P-384 or RSA-4096 key would cap the signature at
+    128-bit collision resistance, and CNSA requires SHA-384 there.
 
     ML-DSA is the only one of these believed secure against a quantum
     computer. NIST IR 8547 (initial public draft) disallows the others after
@@ -87,11 +119,12 @@ def sign(private_key: PrivateKeyTypes, data: bytes) -> bytes:
         >>> verify(key.public_key(), sig, b"message")
     """
     if isinstance(private_key, rsa.RSAPrivateKey):
-        return private_key.sign(data, _PSS_PADDING, hashes.SHA256())
+        algorithm = _rsa_hash(private_key)
+        return private_key.sign(data, _pss(algorithm), algorithm)
     if isinstance(private_key, ed25519.Ed25519PrivateKey | ed448.Ed448PrivateKey):
         return private_key.sign(data)
     if isinstance(private_key, ec.EllipticCurvePrivateKey):
-        return private_key.sign(data, ec.ECDSA(hashes.SHA256()))
+        return private_key.sign(data, _ecdsa(private_key))
     if isinstance(private_key, _MLDSA_PRIVATE):
         return private_key.sign(data)
 
@@ -127,13 +160,14 @@ def verify(public_key: PublicKeyTypes, signature: bytes, data: bytes) -> None:
     """
     try:
         if isinstance(public_key, rsa.RSAPublicKey):
-            public_key.verify(signature, data, _PSS_PADDING, hashes.SHA256())
+            algorithm = _rsa_hash(public_key)
+            public_key.verify(signature, data, _pss(algorithm), algorithm)
             return
         if isinstance(public_key, ed25519.Ed25519PublicKey | ed448.Ed448PublicKey):
             public_key.verify(signature, data)
             return
         if isinstance(public_key, ec.EllipticCurvePublicKey):
-            public_key.verify(signature, data, ec.ECDSA(hashes.SHA256()))
+            public_key.verify(signature, data, _ecdsa(public_key))
             return
         if isinstance(public_key, _MLDSA_PUBLIC):
             public_key.verify(signature, data)

@@ -159,6 +159,7 @@ def _kem_for_public_key(public_key: PublicKeyTypes) -> int:
         InvalidArgumentError: If the key type cannot encrypt.
     """
     if isinstance(public_key, rsa.RSAPublicKey):
+        _require_acceptable_rsa(public_key)
         return KEM_RSA_OAEP_SHA256
     if isinstance(public_key, mlkem.MLKEM768PublicKey):
         return KEM_MLKEM768
@@ -167,6 +168,42 @@ def _kem_for_public_key(public_key: PublicKeyTypes) -> int:
     if isinstance(public_key, x25519.X25519PublicKey):
         return KEM_X25519_HKDF
     raise _cannot_encrypt(public_key)
+
+
+#: Smallest RSA modulus new ciphertext may be encrypted to. NIST SP 800-131A
+#: has disallowed smaller keys for key transport since the end of 2013.
+MIN_RSA_ENCRYPTION_BITS: Final = 2048
+
+#: Smallest RSA public exponent accepted for encryption (FIPS 186-5: e > 2**16).
+MIN_RSA_PUBLIC_EXPONENT: Final = 65537
+
+
+def _require_acceptable_rsa(public_key: rsa.RSAPublicKey) -> None:
+    """Refuse to protect new data with an RSA key that is already broken.
+
+    A recipient's key is usually someone else's, loaded from a file. Encrypting
+    to a 1024-bit key produced a container whose content key a well-resourced
+    attacker can recover today. Decryption is unaffected: data already
+    encrypted to such a key can still be read by its owner.
+
+    Raises:
+        InvalidArgumentError: If the modulus or the public exponent is too
+            small.
+    """
+    exponent = public_key.public_numbers().e
+    if public_key.key_size < MIN_RSA_ENCRYPTION_BITS:
+        msg = (
+            f"Refusing to encrypt to a {public_key.key_size}-bit RSA key. NIST "
+            f"SP 800-131A disallows RSA below {MIN_RSA_ENCRYPTION_BITS} bits "
+            "for key transport; ask the recipient for a current key."
+        )
+        raise InvalidArgumentError(msg)
+    if exponent < MIN_RSA_PUBLIC_EXPONENT:
+        msg = (
+            f"Refusing to encrypt to an RSA key with public exponent {exponent}. "
+            f"FIPS 186-5 requires an exponent of at least {MIN_RSA_PUBLIC_EXPONENT}."
+        )
+        raise InvalidArgumentError(msg)
 
 
 def _aad(header: bytes, encapsulation: bytes, nonce: bytes, extra: bytes) -> bytes:

@@ -181,10 +181,13 @@ def generate_rsa(
             "but interoperate poorly."
         )
         raise InvalidArgumentError(msg)
-    if public_exponent not in (3, DEFAULT_PUBLIC_EXPONENT):
+    if public_exponent != DEFAULT_PUBLIC_EXPONENT:
+        # e = 3 was accepted. FIPS 186-5 requires e > 2**16, and small
+        # exponents are what make padding and broadcast attacks practical.
         msg = (
             f"Unsupported RSA public exponent {public_exponent}; use "
-            f"{DEFAULT_PUBLIC_EXPONENT}."
+            f"{DEFAULT_PUBLIC_EXPONENT}, the only value FIPS 186-5 and "
+            "every mainstream implementation agree on."
         )
         raise InvalidArgumentError(msg)
 

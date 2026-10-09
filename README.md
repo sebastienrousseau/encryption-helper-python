@@ -585,8 +585,8 @@ encryption-helper-mcp --root /path/to/inspect
 | Content key derivation | HKDF-SHA256, with the mechanism identifier in the `info` so the same secret cannot derive the same key under two labels |
 | Private key container | **PKCS#8** (`-----BEGIN PRIVATE KEY-----`) |
 | Public key container | SubjectPublicKeyInfo, or the OpenSSH single-line form |
-| RSA signatures | PSS with SHA-256, salt = digest length. PKCS#1 v1.5 is not offered |
-| EdDSA / ECDSA | Ed25519, Ed448 (PureEdDSA); ECDSA with SHA-256 |
+| RSA signatures | PSS, salt = digest length; SHA-256 for RSA-2048, SHA-384 from 3072 bits. PKCS#1 v1.5 is not offered |
+| EdDSA / ECDSA | Ed25519, Ed448 (PureEdDSA); ECDSA with SHA-256 on P-256, SHA-384 on P-384, SHA-512 on P-521 |
 | Post-quantum signatures | ML-DSA, hedged (FIPS 204) |
 | Fingerprints | SHA-256 over the OpenSSH encoding where one exists, matching `ssh-keygen -lf`; otherwise over DER SPKI under a distinct `SHA256-SPKI:` prefix |
 

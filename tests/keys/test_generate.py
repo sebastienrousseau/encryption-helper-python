@@ -193,3 +193,13 @@ class TestQuantumVulnerabilityMetadata:
 
         assert not (POST_QUANTUM & QUANTUM_VULNERABLE)
         assert set(SUPPORTED_ALGORITHMS) == POST_QUANTUM | QUANTUM_VULNERABLE
+
+
+class TestPublicExponentThree:
+    def test_e3_is_refused(self):
+        """It was accepted; FIPS 186-5 requires e > 2**16."""
+        from encryption_helper.errors import InvalidArgumentError
+        from encryption_helper.keys.generate import generate_rsa
+
+        with pytest.raises(InvalidArgumentError, match="65537"):
+            generate_rsa(public_exponent=3)

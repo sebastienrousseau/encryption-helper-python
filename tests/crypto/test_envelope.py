@@ -225,6 +225,12 @@ class TestInternalFailureBranches:
 
         @rsa.RSAPublicKey.register
         class TooSmallKey:
+            # Passes the size and exponent floors, so the wrap itself fails.
+            key_size = 2048
+
+            def public_numbers(self):
+                return rsa.RSAPublicNumbers(e=65537, n=1)
+
             def encrypt(self, plaintext, padding):
                 raise ValueError("data too large for key size")
 
@@ -401,3 +407,31 @@ class TestMalformedEncapsulation:
         blob = encrypt(key.public_key(), b"payload")
         with pytest.raises(DecryptionError):
             decrypt(key, self._relabel_length(blob, 0))
+
+
+class TestRsaRecipientFloors:
+    """New ciphertext must not be protected by an already-broken RSA key."""
+
+    def test_a_1024_bit_key_is_refused(self):
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        weak = rsa.generate_private_key(public_exponent=65537, key_size=1024)  # noqa: S505 - weak on purpose
+        with pytest.raises(InvalidArgumentError, match="1024-bit RSA key"):
+            encrypt(weak.public_key(), b"data")
+
+    def test_a_small_public_exponent_is_refused(self):
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        small_e = rsa.generate_private_key(public_exponent=3, key_size=2048)
+        with pytest.raises(InvalidArgumentError, match="public exponent 3"):
+            encrypt(small_e.public_key(), b"data")
+
+    def test_the_streaming_path_applies_the_same_floor(self):
+        import io
+
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from encryption_helper.crypto.streaming import encrypt_stream
+
+        weak = rsa.generate_private_key(public_exponent=65537, key_size=1024)  # noqa: S505 - weak on purpose
+        with pytest.raises(InvalidArgumentError, match="1024-bit RSA key"):
+            encrypt_stream(weak.public_key(), io.BytesIO(b"x"), io.BytesIO())

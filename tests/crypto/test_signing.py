@@ -181,3 +181,66 @@ class TestPostQuantumSigning:
         key = request.getfixturevalue(fixture)
         with pytest.raises(UnsupportedAlgorithmError, match="Cannot verify"):
             verify(key.public_key(), b"sig", b"data")
+
+
+class TestHashMatchesKeyStrength:
+    """SHA-256 everywhere capped P-384, P-521 and RSA-3072+ at 128-bit
+    collision resistance, and fell short of CNSA, which pairs them with
+    SHA-384 or better."""
+
+    @staticmethod
+    def _prehash_verifies(public_key, signature, data, algorithm, scheme):
+        from cryptography.exceptions import InvalidSignature
+
+        try:
+            scheme(public_key, signature, data, algorithm)
+        except InvalidSignature:
+            return False
+        return True
+
+    @pytest.mark.parametrize(
+        ("curve", "expected"),
+        [("p256", "SHA256"), ("p384", "SHA384"), ("p521", "SHA512")],
+    )
+    def test_ecdsa_uses_the_curve_matched_hash(self, curve, expected):
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from encryption_helper.keys.generate import generate_ecdsa
+
+        key = generate_ecdsa(curve=curve)
+        signature = sign(key, b"payment batch")
+
+        def ecdsa(pub, sig, data, algorithm):
+            pub.verify(sig, data, ec.ECDSA(algorithm))
+
+        algorithm = getattr(hashes, expected)()
+        assert self._prehash_verifies(
+            key.public_key(), signature, b"payment batch", algorithm, ecdsa
+        )
+        if expected != "SHA256":
+            assert not self._prehash_verifies(
+                key.public_key(), signature, b"payment batch", hashes.SHA256(), ecdsa
+            )
+
+    @pytest.mark.parametrize(
+        ("size", "expected"), [(2048, "SHA256"), (3072, "SHA384"), (4096, "SHA384")]
+    )
+    def test_rsa_pss_uses_the_size_matched_hash(self, size, expected):
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import padding
+        from encryption_helper.keys.generate import generate_rsa
+
+        key = generate_rsa(key_size=size)
+        signature = sign(key, b"payment batch")
+        algorithm = getattr(hashes, expected)()
+        pss = padding.PSS(
+            mgf=padding.MGF1(algorithm), salt_length=padding.PSS.DIGEST_LENGTH
+        )
+        key.public_key().verify(signature, b"payment batch", pss, algorithm)
+
+    @pytest.mark.parametrize("curve", ["p256", "p384", "p521"])
+    def test_round_trip_on_every_curve(self, curve):
+        from encryption_helper.keys.generate import generate_ecdsa
+
+        key = generate_ecdsa(curve=curve)
+        verify(key.public_key(), sign(key, b"m"), b"m")

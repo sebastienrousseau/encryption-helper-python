@@ -83,6 +83,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `keygen --format openssh` with a passphrase no longer crashes with
   "unexpected internal error" when the optional `bcrypt` package is absent;
   it reports that `bcrypt` is needed, or that `pem`/`der` can be used.
+- **Signatures use a hash matched to the key's strength.** Every signature
+  used SHA-256, capping P-384, P-521 and RSA-3072+ at 128-bit collision
+  resistance and falling short of CNSA. ECDSA now uses SHA-384 on P-384
+  and SHA-512 on P-521; RSA-PSS uses SHA-384 from 3072 bits. Signing is new
+  in this release, so no published signature is affected.
+- **Encrypting to a broken RSA key is refused.** RSA-1024 recipients, which
+  NIST SP 800-131A has disallowed for key transport since 2013, and public
+  exponents below 65537 were accepted. Decrypting existing data is
+  unaffected. `generate_rsa` no longer accepts `public_exponent=3`.
 - **Migration dates now follow security strength, as NIST's do.** Every
   classical algorithm was reported as "deprecated 2030, disallowed 2035".
   That is correct only for 112-bit keys such as RSA-2048 and P-224. It
