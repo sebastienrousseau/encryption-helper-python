@@ -49,6 +49,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Known-answer vectors for container version 1** (`tests/vectors/v1.json`):
+  one-shot and streaming containers for every mechanism, written once and
+  never regenerated. Every earlier encryption test was a round trip through
+  the current code, so a change to the KDF `info` string passed all 996 of
+  them while making every existing container unreadable; nine vector tests
+  now fail on that change.
 - `policy.security_strength()`, `NIST_LEGACY_DISALLOWED_FROM`, and
   `legacy_disallowed_from` in the published horizon. `scan` adds
   `below_minimum_strength` to its summary, and marks those findings "replace
