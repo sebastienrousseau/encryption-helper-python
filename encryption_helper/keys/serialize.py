@@ -19,6 +19,7 @@ from cryptography.hazmat.primitives.asymmetric.types import (
     PublicKeyTypes,
 )
 
+from .._labels import key_label
 from ..errors import InvalidArgumentError, UnsupportedAlgorithmError
 from . import _pkcs8
 
@@ -131,7 +132,7 @@ def encode_private_key(
             encryption_algorithm=encryption,
         )
     except (ValueError, TypeError) as exc:
-        msg = f"Cannot encode a {type(key).__name__} as {normalised}: {exc}"
+        msg = f"Cannot encode {key_label(key)} as {normalised}: {exc}"
         raise UnsupportedAlgorithmError(msg) from exc
     except UnsupportedAlgorithm as exc:
         # The OpenSSH format's KDF is bcrypt-pbkdf, which cryptography only
@@ -159,7 +160,7 @@ def _strongly_protected_pkcs8(
             encryption_algorithm=serialization.NoEncryption(),
         )
     except (ValueError, TypeError) as exc:  # pragma: no cover - every type has PKCS#8
-        msg = f"Cannot encode a {type(key).__name__} as {normalised}: {exc}"
+        msg = f"Cannot encode {key_label(key)} as {normalised}: {exc}"
         raise UnsupportedAlgorithmError(msg) from exc
     protected = _pkcs8.protect(der, passphrase)
     return _pkcs8.to_pem(protected) if normalised == "pem" else protected
@@ -206,5 +207,5 @@ def encode_public_key(key: PublicKeyTypes, *, fmt: str = "pem") -> bytes:
     try:
         return key.public_bytes(encoding=encoding, format=public_format)
     except (ValueError, TypeError) as exc:
-        msg = f"Cannot encode a {type(key).__name__} as {normalised}: {exc}"
+        msg = f"Cannot encode {key_label(key)} as {normalised}: {exc}"
         raise UnsupportedAlgorithmError(msg) from exc

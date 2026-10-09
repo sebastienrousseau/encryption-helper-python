@@ -64,6 +64,45 @@ def _sigterm_unwinds() -> Iterator[None]:
         signal.signal(signal.SIGTERM, previous)
 
 
+def _describe_os_error(exc: OSError) -> str:
+    """Say what the operating system refused, and where, in one line."""
+    reason = exc.strerror or type(exc).__name__
+    if exc.filename is not None:
+        return f"{reason}: {exc.filename}"
+    return reason
+
+
+def _classify(exc: Exception) -> tuple[str, int]:
+    """Map a failure to the message the user sees and the exit code.
+
+    Every branch is a promise about what the user is told:
+
+    * this library's own errors carry messages written for the user;
+    * an OSError -- a full disk, a read-only directory, a missing
+      permission -- is the environment, not a bug, and was reported as
+      "unexpected internal error ... please report this" with a traceback;
+    * anything else may quote a path or value the user never meant to
+      surface, so it gets a fixed message, and the traceback is logged at
+      DEBUG only. (``logger.exception`` logs at ERROR, which is shown by
+      default, so it used to print the traceback on every run.)
+    """
+    if isinstance(exc, KeyExistsError):
+        return str(exc), EXIT_KEY_EXISTS
+    if isinstance(exc, DecryptionError | SignatureVerificationError):
+        return str(exc), EXIT_CRYPTO_FAILURE
+    if isinstance(exc, EncryptionHelperError):
+        return str(exc), EXIT_ERROR
+    if isinstance(exc, OSError):
+        logger.debug("Operating system error", exc_info=exc)
+        return _describe_os_error(exc), EXIT_ERROR
+    logger.debug("Unexpected internal error", exc_info=exc)
+    return (
+        "unexpected internal error. Re-run with --log-level DEBUG for "
+        "details, and please report this.",
+        EXIT_ERROR,
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the command-line interface.
 
@@ -81,32 +120,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         with _sigterm_unwinds():
             result: int = args.func(args)
-    except KeyExistsError as exc:
-        emit_error(str(exc), EXIT_KEY_EXISTS)
-        return EXIT_KEY_EXISTS
-    except (DecryptionError, SignatureVerificationError) as exc:
-        emit_error(str(exc), EXIT_CRYPTO_FAILURE)
-        return EXIT_CRYPTO_FAILURE
-    except EncryptionHelperError as exc:
-        emit_error(str(exc), EXIT_ERROR)
-        return EXIT_ERROR
     except BrokenPipeError:  # pragma: no cover - depends on the consumer
         # A downstream `head` closing the pipe is not an error.
         os._exit(EXIT_OK)
     except KeyboardInterrupt:  # pragma: no cover - interactive only
         emit_error("interrupted", EXIT_ERROR)
         return EXIT_ERROR
-    except Exception:
-        # An unexpected exception's text may quote a path, an argument, or a
-        # value the user never meant to surface. Print a fixed message and
-        # send the detail to the log, which the operator controls.
-        logger.exception("Unexpected internal error")
-        emit_error(
-            "unexpected internal error. Re-run with --log-level DEBUG for "
-            "details, and please report this.",
-            EXIT_ERROR,
-        )
-        return EXIT_ERROR
+    except Exception as exc:  # noqa: BLE001 - every failure gets an exit code
+        message, code = _classify(exc)
+        emit_error(message, code)
+        return code
     return result
 
 

@@ -31,6 +31,7 @@ from cryptography.hazmat.primitives.asymmetric.types import (
     PublicKeyTypes,
 )
 
+from .._labels import key_label
 from ..errors import SignatureVerificationError, UnsupportedAlgorithmError
 
 __all__ = ["is_valid_signature", "sign", "verify"]
@@ -129,7 +130,7 @@ def sign(private_key: PrivateKeyTypes, data: bytes) -> bytes:
         return private_key.sign(data)
 
     msg = (
-        f"Cannot sign with a {type(private_key).__name__}. Supported key types "
+        f"Cannot sign with {key_label(private_key)}. Supported key types "
         "are RSA, Ed25519, Ed448, ECDSA and ML-DSA. X25519 and ML-KEM keys are "
         "for encryption, not signing."
     )
@@ -180,7 +181,7 @@ def verify(public_key: PublicKeyTypes, signature: bytes, data: bytes) -> None:
         raise SignatureVerificationError(msg) from exc
 
     msg = (
-        f"Cannot verify with a {type(public_key).__name__}. Supported key "
+        f"Cannot verify with {key_label(public_key)}. Supported key "
         "types are RSA, Ed25519, Ed448, ECDSA and ML-DSA."
     )
     raise UnsupportedAlgorithmError(msg)

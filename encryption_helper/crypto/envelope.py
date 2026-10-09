@@ -48,6 +48,7 @@ from cryptography.hazmat.primitives.asymmetric.types import (
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
+from .._labels import key_label
 from ..errors import DecryptionError, InvalidArgumentError
 
 __all__ = [
@@ -322,7 +323,7 @@ def _decapsulate(
 def _cannot_encrypt(public_key: PublicKeyTypes) -> InvalidArgumentError:
     """Build the error for a key type that cannot encrypt."""
     msg = (
-        f"Cannot encrypt to a {type(public_key).__name__}. Encryption requires "
+        f"Cannot encrypt to {key_label(public_key)}. Encryption requires "
         "an RSA, ML-KEM or X25519 public key; Ed25519, Ed448, ECDSA and ML-DSA "
         "keys are for signing."
     )
@@ -354,16 +355,16 @@ def _wrong_key_type(
     That split also keeps the property "no mutation of a container ever
     returns plaintext" expressible as a single exception type.
     """
-    supplied = type(private_key).__name__
+    supplied = key_label(private_key)
     if not isinstance(private_key, _DECRYPTION_CAPABLE):
         msg = (
-            f"Cannot decrypt with a {supplied}. Decryption requires an RSA, "
+            f"Cannot decrypt with {supplied}. Decryption requires an RSA, "
             "ML-KEM or X25519 private key; Ed25519, Ed448, ECDSA and ML-DSA "
             "keys are for signing."
         )
         return InvalidArgumentError(msg)
     msg = (
-        f"This ciphertext needs {wanted} private key, but a {supplied} was "
+        f"This ciphertext needs {wanted} private key, but {supplied} was "
         "supplied. The key does not match the ciphertext, or the ciphertext "
         "has been modified."
     )

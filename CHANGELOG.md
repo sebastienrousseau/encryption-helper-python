@@ -92,6 +92,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   NIST SP 800-131A has disallowed for key transport since 2013, and public
   exponents below 65537 were accepted. Decrypting existing data is
   unaffected. `generate_rsa` no longer accepts `public_exponent=3`.
+- **Operating-system failures are reported as such.** A full disk, a
+  read-only directory or a missing permission printed a traceback and
+  "unexpected internal error ... please report this". They are now one line
+  naming the reason and the path, exit 1. Genuinely unexpected errors log
+  their traceback at DEBUG only; `logger.exception` logged at ERROR, which
+  is shown by default.
+- An encrypted key loaded without a passphrase now says so, instead of
+  suggesting the file may be corrupt. A wrong passphrase remains
+  deliberately indistinguishable from a corrupt file.
+- Messages name algorithms ("an Ed25519 key", "an RSA-2048 key") rather
+  than Python classes ("a Ed25519PublicKey").
 - **Migration dates now follow security strength, as NIST's do.** Every
   classical algorithm was reported as "deprecated 2030, disallowed 2035".
   That is correct only for 112-bit keys such as RSA-2048 and P-224. It

@@ -805,7 +805,7 @@ class TestPassphrasePrompting:
             ]
         )
         assert code == EXIT_ERROR
-        assert "Could not load the private key" in capsys.readouterr().err
+        assert "encrypted and no passphrase was supplied" in capsys.readouterr().err
 
 
 class TestUnexpectedErrors:

@@ -60,7 +60,7 @@ class TestWriteKeyPair:
         assert paths.private_key_path.read_bytes().startswith(
             b"-----BEGIN ENCRYPTED PRIVATE KEY-----"
         )
-        with pytest.raises(Exception, match="Could not load"):
+        with pytest.raises(Exception, match="encrypted and no passphrase was supplied"):
             load_private_key_file(paths.private_key_path)
         assert load_private_key_file(
             paths.private_key_path, passphrase=b"correct horse"

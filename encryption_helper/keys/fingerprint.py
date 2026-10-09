@@ -23,6 +23,7 @@ import hashlib
 
 from cryptography.hazmat.primitives.asymmetric.types import PublicKeyTypes
 
+from .._labels import key_label
 from ..errors import UnsupportedAlgorithmError
 from .serialize import encode_public_key
 
@@ -75,13 +76,13 @@ def fingerprint_sha256(key: PublicKeyTypes) -> str:
     parts = openssh.split()
     expected_parts = 2
     if len(parts) < expected_parts:
-        msg = f"Unexpected OpenSSH encoding for a {type(key).__name__}."
+        msg = f"Unexpected OpenSSH encoding for {key_label(key)}."
         raise UnsupportedAlgorithmError(msg)
 
     try:
         blob = base64.b64decode(parts[1], validate=True)
     except (ValueError, TypeError) as exc:
-        msg = f"Could not decode the OpenSSH encoding of a {type(key).__name__}."
+        msg = f"Could not decode the OpenSSH encoding of {key_label(key)}."
         raise UnsupportedAlgorithmError(msg) from exc
 
     return OPENSSH_PREFIX + _digest(blob)

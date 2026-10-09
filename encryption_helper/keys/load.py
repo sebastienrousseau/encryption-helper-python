@@ -69,6 +69,7 @@ def load_private_key(
     if not data:
         msg = "Cannot load a private key from empty input."
         raise KeyReadError(msg)
+    last_error: Exception
 
     try:
         if b"OPENSSH PRIVATE KEY" in data:
@@ -79,7 +80,19 @@ def load_private_key(
         else:
             key = serialization.load_der_private_key(data, password=passphrase)
             der = data
-    except (ValueError, TypeError, UnsupportedAlgorithm) as exc:
+    except TypeError as exc:
+        if passphrase is None:
+            # The key's own header already says it is encrypted, so naming
+            # that reveals nothing; it only stops a missing passphrase being
+            # reported as a possibly corrupt file.
+            msg = (
+                "The private key is encrypted and no passphrase was supplied. "
+                "Provide one with --passphrase-env VAR or --passphrase-file "
+                "PATH, or the passphrase argument."
+            )
+            raise KeyReadError(msg) from exc
+        last_error = exc
+    except (ValueError, UnsupportedAlgorithm) as exc:
         last_error = exc
     else:
         _warn_if_weakly_protected(der)
