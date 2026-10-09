@@ -308,3 +308,18 @@ class TestHumanModeKeepsStdoutPure:
         argv += ["--in", str(payload), "--out", str(out)]
         assert main(argv) == EXIT_OK
         assert str(out) in capsys.readouterr().out
+
+
+class TestForceBacksUpStreamedOutput:
+    """``--force`` promised a backup on encrypt and decrypt, and took none."""
+
+    def test_encrypt_force_keeps_a_backup(self, keys, payload, tmp_path, capsys):
+        out = tmp_path / "data.enc"
+        out.write_bytes(b"previous ciphertext")
+        argv = ["-q", "encrypt", "--public-key", str(keys / "key.pub.pem")]
+        argv += ["--in", str(payload), "--out", str(out), "--force"]
+        assert main(argv) == EXIT_OK
+        backups = list(tmp_path.glob("data.enc.bak-*"))
+        assert len(backups) == 1
+        assert backups[0].read_bytes() == b"previous ciphertext"
+        assert out.read_bytes().startswith(b"EHEV")

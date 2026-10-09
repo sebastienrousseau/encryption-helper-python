@@ -4,9 +4,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
-from collections.abc import Sequence
+import signal
+import threading
+from collections.abc import Iterator, Sequence
+from types import FrameType
 
 from ..errors import (
     DecryptionError,
@@ -30,6 +34,36 @@ from ._parser import build_parser
 logger = logging.getLogger(__name__)
 
 
+def _terminate(signum: int, _frame: FrameType | None) -> None:
+    """Turn SIGTERM into an exception, so cleanup code actually runs.
+
+    The default disposition kills the process outright, skipping every
+    ``finally`` and ``except`` block -- so a `decrypt --out file` stopped by
+    a container runtime or `kill` left its hidden temporary file, holding
+    partial plaintext, in the destination directory for good. Raising
+    instead unwinds through the writers, which remove it.
+    """
+    raise SystemExit(128 + signum)
+
+
+@contextlib.contextmanager
+def _sigterm_unwinds() -> Iterator[None]:
+    """Install :func:`_terminate` for the duration of one command.
+
+    Only from the main thread, where Python permits it, and the previous
+    handler is restored afterwards, so embedding :func:`main` in a host
+    process does not leave that process's signal handling changed.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous = signal.signal(signal.SIGTERM, _terminate)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the command-line interface.
 
@@ -45,7 +79,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     _configure_logging(args)
 
     try:
-        result: int = args.func(args)
+        with _sigterm_unwinds():
+            result: int = args.func(args)
     except KeyExistsError as exc:
         emit_error(str(exc), EXIT_KEY_EXISTS)
         return EXIT_KEY_EXISTS

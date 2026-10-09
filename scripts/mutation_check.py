@@ -98,10 +98,30 @@ MUTATIONS: tuple[Mutation, ...] = (
         id="io-restore",
         property="a write that fails after displacing a file restores it",
         path="encryption_helper/_io.py",
-        # One rollback site now, reached by every failing write stage.
-        old="        if displaced is not None:\n            displaced.restore()",
-        new="        if displaced is not None:\n            pass",
+        # The buffered writer's rollback site, reached by every failing stage.
+        old=(
+            "        # failed replacement leaves no file where one used to be.\n"
+            "        if displaced is not None:\n            displaced.restore()"
+        ),
+        new=(
+            "        # failed replacement leaves no file where one used to be.\n"
+            "        if displaced is not None:\n            pass"
+        ),
         tests=("tests/test_io.py", "tests/test_release_candidate.py"),
+    ),
+    Mutation(
+        id="io-stream-restore",
+        property="a streamed write whose commit fails restores the backup",
+        path="encryption_helper/_io.py",
+        old=(
+            "            tmp_path.unlink()\n        if displaced is not None:\n"
+            "            displaced.restore()"
+        ),
+        new=(
+            "            tmp_path.unlink()\n        if displaced is not None:\n"
+            "            pass"
+        ),
+        tests=("tests/test_secure_write_stream.py",),
     ),
     Mutation(
         id="io-exclusive",
@@ -261,6 +281,22 @@ MUTATIONS: tuple[Mutation, ...] = (
         tests=("tests/crypto/test_metadata.py",),
     ),
     Mutation(
+        id="io-stream-backup",
+        property="--force on streamed output backs up the file it replaces",
+        path="encryption_helper/_io.py",
+        old="            displaced = _displace(target)\n        _commit_without_clobbering",
+        new="            target.unlink()\n        _commit_without_clobbering",
+        tests=("tests/test_secure_write_stream.py",),
+    ),
+    Mutation(
+        id="io-no-clobber-commit",
+        property="a commit never overwrites a file that appeared mid-write",
+        path="encryption_helper/_io.py",
+        old="        os.link(tmp_path, target)",
+        new="        os.replace(tmp_path, target)",
+        tests=("tests/test_secure_write_stream.py",),
+    ),
+    Mutation(
         id="cli-stdout-purity",
         property="a report never lands in data written to stdout",
         path="encryption_helper/cli/_output.py",
@@ -368,9 +404,17 @@ def _pytest(root: Path, selection: tuple[str, ...]) -> subprocess.CompletedProce
     imported in preference to any installed or editable copy. Without it an
     editable install would shadow the mutated source and every mutation would
     appear to survive.
+
+    ``PYTHONDONTWRITEBYTECODE`` is set because mutations are applied one
+    after another in the same copy, and a ``.pyc`` is trusted when the
+    source's size and whole-second mtime match. Two mutations that replace
+    the same text with the same text at different sites produce files of
+    identical size; written within one second, the second run executed the
+    *first* mutant's cached bytecode and reported a false survivor.
     """
     env = dict(os.environ)
     env["PYTHONPATH"] = str(root)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
     return subprocess.run(  # noqa: S603
         [
             sys.executable,

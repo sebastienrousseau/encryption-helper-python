@@ -25,13 +25,20 @@ import os
 import stat
 import sys
 import tempfile
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import NamedTuple
+from typing import IO, NamedTuple
 
 from .errors import KeyExistsError, KeyReadError, KeyWriteError
 
-__all__ = ["WriteOutcome", "read_bytes", "resolve_destination", "secure_write_bytes"]
+__all__ = [
+    "WriteOutcome",
+    "read_bytes",
+    "resolve_destination",
+    "secure_write_bytes",
+    "secure_write_stream",
+]
 
 #: Mode for files containing secret material: owner read/write only.
 SECRET_FILE_MODE = 0o600
@@ -334,13 +341,154 @@ def _write_atomically(target: Path, data: bytes, *, mode: int, dir_mode: int) ->
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        tmp_path.replace(target)
+        _commit_without_clobbering(tmp_path, target)
         _fsync_directory(parent)
     except OSError as exc:
         with contextlib.suppress(OSError):
             tmp_path.unlink()
         msg = f"Could not write to {target}: {exc.strerror}"
         raise KeyWriteError(msg) from exc
+
+
+def _commit_without_clobbering(tmp_path: Path, target: Path) -> None:
+    """Move a finished temporary file into place, never over another file.
+
+    Callers establish that ``target`` is absent first -- either it never
+    existed, or the old file has been displaced to a backup. A plain rename
+    would still replace anything another process created in between, so the
+    commit is a hard link, which fails if the name is taken, followed by
+    removing the temporary name.
+
+    A filesystem without hard links (FAT, some network mounts) falls back to
+    a rename after re-checking, which narrows the window but cannot close it.
+
+    Raises:
+        KeyExistsError: If ``target`` appeared after the caller's check.
+        OSError: If the commit fails for any other reason. The temporary
+            file is left for the caller to remove.
+    """
+    try:
+        os.link(tmp_path, target)
+    except FileExistsError as exc:
+        msg = (
+            f"{target} was created by another process while this write was "
+            "in progress. Nothing was overwritten."
+        )
+        raise KeyExistsError(msg) from exc
+    except OSError:
+        # Hard links unsupported here. Re-check, then rename.
+        if target.exists() or target.is_symlink():
+            msg = (
+                f"{target} was created by another process while this write "
+                "was in progress. Nothing was overwritten."
+            )
+            raise KeyExistsError(msg) from None
+        tmp_path.replace(target)
+        return
+    # The link is the commit: the target now holds the new content. Removing
+    # the temporary name is cleanup, so its failure must not turn a completed
+    # write into a reported failure -- the caller would then roll back a file
+    # that was correctly written.
+    with contextlib.suppress(OSError):
+        tmp_path.unlink()
+
+
+@contextlib.contextmanager
+def secure_write_stream(
+    path: str | os.PathLike[str],
+    *,
+    mode: int = SECRET_FILE_MODE,
+    overwrite: bool = False,
+    dir_mode: int = SECRET_DIR_MODE,
+) -> Iterator[tuple[IO[bytes], list[WriteOutcome]]]:
+    """Stream into ``path`` with the guarantees of :func:`secure_write_bytes`.
+
+    For output too large to hold in memory -- a decrypted file, a ciphertext.
+    The data goes to a temporary file in the destination directory at
+    ``mode``; only once the caller's block completes is it committed. So:
+
+    * a failure or interruption part way through leaves the destination
+      untouched and removes the temporary file;
+    * with ``overwrite``, the existing file is moved to a timestamped
+      ``.bak-`` sibling *at commit time* -- after the new content is complete
+      -- and restored if the commit fails;
+    * a symbolic link at the destination is refused, as is a file created by
+      another process during the write;
+    * parent directories are created at ``dir_mode`` and both the file and
+      its directory are synced.
+
+    Args:
+        path: Destination file path.
+        mode: Permission bits for the resulting file.
+        overwrite: Replace an existing file, backing it up first.
+        dir_mode: Permission bits for any parent directories created.
+
+    Yields:
+        A writable binary stream, and a list that receives the
+        :class:`WriteOutcome` once the write has been committed.
+
+    Raises:
+        KeyExistsError: If the destination exists and ``overwrite`` is false,
+            checked before any work is done.
+        KeyWriteError: If the destination is a symlink, or the write fails.
+
+    Example:
+        >>> import tempfile, pathlib
+        >>> d = pathlib.Path(tempfile.mkdtemp())
+        >>> with secure_write_stream(d / "big.bin") as (handle, outcome):
+        ...     _ = handle.write(b"chunk one, ")
+        ...     _ = handle.write(b"chunk two")
+        >>> outcome[0].path.read_bytes()
+        b'chunk one, chunk two'
+    """
+    target = resolve_destination(path)
+    _reject_symlink(target)
+    _reject_existing_destination(target, overwrite=overwrite)
+
+    parent = target.parent
+    try:
+        parent.mkdir(parents=True, exist_ok=True, mode=dir_mode)
+        tmp_fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{target.name}.", suffix=".tmp", dir=parent
+        )
+    except OSError as exc:
+        msg = f"Could not write to {target}: {exc.strerror}"
+        raise KeyWriteError(msg) from exc
+
+    tmp_path = Path(tmp_name)
+    outcome: list[WriteOutcome] = []
+    try:
+        if not _WINDOWS:
+            os.fchmod(tmp_fd, mode)
+        with os.fdopen(tmp_fd, "wb") as handle:
+            yield handle, outcome
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        with contextlib.suppress(OSError):
+            tmp_path.unlink()
+        raise
+
+    displaced = None
+    try:
+        # Re-checked at commit: the destination may have changed during a
+        # long write. A file that appeared is refused unless overwriting.
+        _reject_symlink(target)
+        if _reject_existing_destination(target, overwrite=overwrite):
+            displaced = _displace(target)
+        _commit_without_clobbering(tmp_path, target)
+        _fsync_directory(parent)
+    except BaseException as exc:
+        with contextlib.suppress(OSError):
+            tmp_path.unlink()
+        if displaced is not None:
+            displaced.restore()
+        if isinstance(exc, OSError):
+            msg = f"Could not write to {target}: {exc.strerror}"
+            raise KeyWriteError(msg) from exc
+        raise
+
+    outcome.append(_outcome(target, displaced, replaced=displaced is not None))
 
 
 def _outcome(

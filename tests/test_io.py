@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import os
 import stat
-from pathlib import Path
 
 import pytest
 from encryption_helper._io import (
@@ -193,10 +192,10 @@ class TestFailurePaths:
     def test_write_failure_leaves_no_temporary_file(self, tmp_path, monkeypatch):
         real_write = os.write
 
-        def boom(fd, data):
+        def boom(tmp_path, target):
             raise OSError(28, "No space left on device")
 
-        monkeypatch.setattr("pathlib.Path.replace", boom)
+        monkeypatch.setattr("encryption_helper._io._commit_without_clobbering", boom)
         with pytest.raises(KeyWriteError, match="Could not write"):
             secure_write_bytes(tmp_path / "key.pem", b"secret")
         assert list(tmp_path.iterdir()) == []
@@ -282,17 +281,15 @@ class TestRestoreOnEveryFailurePath:
         target = tmp_path / "key.pem"
         secure_write_bytes(target, b"original")
 
-        real_replace = Path.replace
-
-        def selective(self, other):
-            # Fail only the final commit -- the temporary file being renamed
+        def failing_commit(tmp, final):
+            # Fail only the final commit -- the temporary file being moved
             # into place. The backup rename and the restore rename must still
             # work, or the test would prove nothing about restoration.
-            if self.name.endswith(".tmp"):
-                raise OSError(5, "Input/output error")
-            return real_replace(self, other)
+            raise OSError(5, "Input/output error")
 
-        monkeypatch.setattr(Path, "replace", selective)
+        monkeypatch.setattr(
+            "encryption_helper._io._commit_without_clobbering", failing_commit
+        )
         with pytest.raises(KeyWriteError, match="Could not write"):
             secure_write_bytes(target, b"replacement", overwrite=True)
 

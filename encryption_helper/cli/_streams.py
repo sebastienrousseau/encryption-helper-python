@@ -6,24 +6,21 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import os
 import sys
-import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 from typing import IO
 
 from .._io import (
-    _WINDOWS,
     read_bytes,
     resolve_destination,
     secure_write_bytes,
+    secure_write_stream,
 )
 from ..crypto.envelope import (
     AEAD_AES_256_GCM_STREAM,
 )
 from ..errors import (
-    KeyExistsError,
     KeyReadError,
     KeyWriteError,
 )
@@ -140,7 +137,9 @@ def _output_stream(
     # replaced. `--out /dev/null` is a legitimate way to discard output, and
     # renaming a temporary file over /dev/null would destroy the device node
     # -- so those destinations are written through directly, with no
-    # existence guard and no atomic commit.
+    # existence guard and no atomic commit. This includes a symlink that
+    # resolves to one, which is what `/dev/stdout` is; a symlink to a regular
+    # file, or a dangling one, is refused by the secure writer below.
     if target.exists() and not target.is_file():
         try:
             handle = target.open("wb")
@@ -155,31 +154,16 @@ def _output_stream(
         reported.append(str(target))
         return
 
-    if target.exists() and not force:
-        msg = (
-            f"{target} already exists. Pass --force to replace it; the "
-            "existing file will be backed up first."
-        )
-        raise KeyExistsError(msg)
-
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp_fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
-    )
-    tmp_path = Path(tmp_name)
-    try:
-        if not _WINDOWS:
-            os.fchmod(tmp_fd, mode)
-        with os.fdopen(tmp_fd, "wb") as handle:
-            yield handle, reported
-            handle.flush()
-            os.fsync(handle.fileno())
-    except BaseException:
-        with contextlib.suppress(OSError):
-            tmp_path.unlink()
-        raise
-    tmp_path.replace(target)
-    reported.append(str(target))
+    # Everything else goes through the same hardened writer as key files:
+    # backup on --force, symlink refusal, no-clobber commit, 0700 parents,
+    # file and directory fsync. This path used to rename over the target
+    # directly, so --force destroyed the old file despite promising a backup.
+    with secure_write_stream(target, mode=mode, overwrite=force) as (
+        secure_handle,
+        outcome,
+    ):
+        yield secure_handle, reported
+    reported.append(str(outcome[0].path))
 
 
 def _is_streaming_container(source: str) -> bool:

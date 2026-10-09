@@ -56,6 +56,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wrote the output unencrypted, even with `--passphrase-env` supplied. An
   encrypted key is now re-encrypted under the same passphrase; removing
   protection takes the new, explicit `--unencrypted` flag.
+- **`--force` on `encrypt` and `decrypt` now really backs up the file it
+  replaces.** Streamed output had its own write path, which renamed over
+  the target while the message promised a backup. All file output now goes
+  through one hardened writer (`secure_write_stream`, alongside
+  `secure_write_bytes`): the backup is taken only once the new content is
+  complete and restored if the commit fails; a symlinked destination is
+  refused (devices such as `/dev/null` and `/dev/stdout` are still written
+  through); new directories are `0700`; and the directory is synced.
+- **A file created during a write is no longer overwritten.** Both writers
+  checked that the destination was absent and later renamed over it; the
+  commit is now a hard link, which fails if the name has been taken.
+- **SIGTERM no longer leaves partial plaintext behind.** The default
+  disposition killed the process without cleanup, leaving `decrypt`'s
+  hidden temporary file in the destination directory. The CLI now unwinds
+  on SIGTERM (exit 143), and the writer removes the file.
 - **Migration dates now follow security strength, as NIST's do.** Every
   classical algorithm was reported as "deprecated 2030, disallowed 2035".
   That is correct only for 112-bit keys such as RSA-2048 and P-224. It
