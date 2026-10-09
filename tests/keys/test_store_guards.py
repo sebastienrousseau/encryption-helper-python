@@ -143,3 +143,43 @@ class TestPreflightOrdering:
 
     def test_clean_destinations_pass_every_guard(self, tmp_path):
         _preflight(tmp_path / "k", tmp_path / "k.pub", overwrite=False)
+
+
+class TestNameIsOnlyAFilename:
+    """The stem names a file; it must never choose where the file goes.
+
+    ``keygen --name ../escaped`` wrote the pair one level above ``--out-dir``,
+    and an absolute stem would have discarded the directory entirely.
+    """
+
+    @pytest.mark.parametrize(
+        "name",
+        ["../escaped", "sub/key", "..", ".", "", "/abs/key", "a\\b", "nul\x00byte"],
+    )
+    def test_a_stem_with_a_directory_part_is_refused(self, tmp_path, name):
+        from encryption_helper import generate
+        from encryption_helper.errors import InvalidArgumentError
+        from encryption_helper.keys.store import write_key_pair
+
+        target = tmp_path / "out"
+        with pytest.raises(InvalidArgumentError, match="plain filename stem"):
+            write_key_pair(generate("ed25519"), target, name=name)
+        written = [p for p in tmp_path.rglob("*") if p.is_file()]
+        assert written == []
+
+    def test_an_ordinary_stem_still_works(self, tmp_path):
+        from encryption_helper import generate
+        from encryption_helper.keys.store import write_key_pair
+
+        result = write_key_pair(generate("ed25519"), tmp_path, name="payments-2026.v2")
+        assert result.private_key_path.parent == tmp_path.resolve()
+
+    def test_the_cli_refuses_an_escaping_name(self, tmp_path, capsys):
+        from encryption_helper.cli import EXIT_OK, main
+
+        out = tmp_path / "out"
+        argv = ["keygen", "--algorithm", "ed25519", "--no-passphrase"]
+        argv += ["--out-dir", str(out), "--name", "../escaped"]
+        assert main(argv) != EXIT_OK
+        assert "plain filename stem" in capsys.readouterr().err
+        assert not (tmp_path / "escaped.pem").exists()

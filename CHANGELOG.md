@@ -47,6 +47,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now a usage error (exit 2). Findings exit with a new code, 5, instead of
   1, so a pipeline can tell "the tree has findings" from "the scanner
   failed"; the JSON result remains a normal `status: ok` document.
+- **`keygen --name` can no longer write outside `--out-dir`.** The stem was
+  joined to the directory unchecked, so `--name ../escaped` wrote the pair
+  one level up, and an empty or `.` name produced hidden files. The stem
+  must now be a single filename component; `write_key_pair()` enforces
+  this for library callers too.
 - **Migration dates now follow security strength, as NIST's do.** Every
   classical algorithm was reported as "deprecated 2030, disallowed 2035".
   That is correct only for 112-bit keys such as RSA-2048 and P-224. It

@@ -47,7 +47,12 @@ from .._io import (
     resolve_destination,
     secure_write_bytes,
 )
-from ..errors import KeyExistsError, KeyPairValidationError, KeyWriteError
+from ..errors import (
+    InvalidArgumentError,
+    KeyExistsError,
+    KeyPairValidationError,
+    KeyWriteError,
+)
 from .fingerprint import fingerprint_sha256
 from .load import load_private_key, load_public_key
 from .serialize import encode_private_key, encode_public_key
@@ -305,6 +310,34 @@ def _undo(outcome: WriteOutcome) -> None:
         pass
 
 
+def _check_stem(name: str) -> None:
+    """Reject a filename stem that is not exactly one path component.
+
+    The stem is joined to the destination directory, so ``../escaped`` wrote
+    the pair outside the directory the caller chose -- and an absolute stem
+    would discard the directory altogether. A stem names a file; it never
+    chooses where the file goes.
+
+    Raises:
+        InvalidArgumentError: If ``name`` is empty, ``.`` or ``..``, or
+            contains a path separator, a drive, or a NUL byte.
+    """
+    if (
+        not name
+        or name in {".", ".."}
+        or "/" in name
+        or "\\" in name
+        or "\x00" in name
+        or Path(name).name != name
+    ):
+        msg = (
+            f"Invalid key name {name!r}: it must be a plain filename stem such "
+            "as 'key', with no directory part. Choose the directory with the "
+            "destination argument (--out-dir on the command line)."
+        )
+        raise InvalidArgumentError(msg)
+
+
 def write_key_pair(  # noqa: PLR0913 - all but two are keyword-only options
     key: PrivateKeyTypes,
     directory: str | os.PathLike[str],
@@ -338,8 +371,10 @@ def write_key_pair(  # noqa: PLR0913 - all but two are keyword-only options
         KeyWriteError: If a file could not be written.
         KeyPairValidationError: If the serialised pair fails validation.
         UnsupportedAlgorithmError: If ``fmt`` is not valid for this key type.
-        InvalidArgumentError: If ``passphrase`` is present but empty.
+        InvalidArgumentError: If ``passphrase`` is present but empty, or
+            ``name`` is not a single filename component.
     """
+    _check_stem(name)
     private_suffix, public_suffix = _SUFFIXES.get(fmt.strip().lower(), _SUFFIXES["pem"])
     base = resolve_destination(directory)
     private_path = base / f"{name}{private_suffix}"
