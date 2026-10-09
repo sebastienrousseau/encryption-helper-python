@@ -187,6 +187,22 @@ MUTATIONS: tuple[Mutation, ...] = (
         tests=("tests/crypto/test_streaming.py",),
     ),
     Mutation(
+        id="stream-exact-read",
+        property="short reads cannot produce an undecryptable stream",
+        path="encryption_helper/crypto/streaming.py",
+        old="        following = _read_exact(source, segment_size)",
+        new="        following = source.read(segment_size)",
+        tests=("tests/crypto/test_streaming.py",),
+    ),
+    Mutation(
+        id="stream-kem-check",
+        property="the streaming reader rejects unknown KEM identifiers",
+        path="encryption_helper/crypto/envelope.py",
+        old="    if kem_id not in SUPPORTED_KEMS:\n        known =",
+        new="    if False:\n        known =",
+        tests=("tests/crypto/test_streaming.py",),
+    ),
+    Mutation(
         id="stream-counter",
         property="segment reordering and dropping are detected",
         path="encryption_helper/crypto/streaming.py",
@@ -235,6 +251,14 @@ MUTATIONS: tuple[Mutation, ...] = (
         old="        if not value.strip():",
         new="        if False:",
         tests=("tests/test_release_candidate.py",),
+    ),
+    Mutation(
+        id="cli-stdout-purity",
+        property="a report never lands in data written to stdout",
+        path="encryption_helper/cli/_output.py",
+        old="        print(human, file=stream)",
+        new="        print(human)",
+        tests=("tests/test_cli_output_paths.py",),
     ),
     Mutation(
         id="cli-newline-semantics",

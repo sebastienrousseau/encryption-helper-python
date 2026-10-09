@@ -208,7 +208,10 @@ class TestMalformedContainers:
         key = request.getfixturevalue(fixture)
         blob = seal(key, b"data")
         blob[5] = 99
-        with pytest.raises(DecryptionError, match="Unsupported key encapsulation"):
+        # Matches the header validator's wording specifically, so this test
+        # fails if that check goes, even though _decapsulate would still
+        # refuse the identifier one layer down.
+        with pytest.raises(DecryptionError, match="99; this build understands"):
             open_sealed(key, bytes(blob))
 
     def test_decapsulate_fails_closed_on_an_unknown_identifier(self, x25519_key):
