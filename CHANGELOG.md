@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   carries data the report now goes to stderr, as the JSON report already
   did. **Files produced this way by earlier builds are recoverable**: strip
   the trailing report line, which is plain ASCII after the last segment.
+- **`encrypt_stream` no longer writes undecryptable containers from
+  short-reading sources.** It used a plain `read(segment_size)`, and a raw
+  file, socket or custom stream may return fewer bytes than asked before its
+  end. Interior segments then came out short, encryption reported success,
+  and decryption -- which splits at fixed boundaries -- rejected segment 0.
+  Reads are now exact, and writes to raw streams that accept data in parts
+  are completed instead of silently truncated. Containers written by earlier
+  builds from ordinary files and pipes are unaffected.
 - **Migration dates now follow security strength, as NIST's do.** Every
   classical algorithm was reported as "deprecated 2030, disallowed 2035".
   That is correct only for 112-bit keys such as RSA-2048 and P-224. It

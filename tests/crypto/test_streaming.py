@@ -22,6 +22,8 @@ from encryption_helper.crypto.streaming import (
     encrypt_stream,
 )
 from encryption_helper.errors import DecryptionError, InvalidArgumentError
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 SEGMENT = 4096
 #: Framing before the first segment: 10-byte header, 32-byte X25519
@@ -263,3 +265,123 @@ class TestKeyTypeValidation:
         blob = bytes(seal(x25519_key, b"data"))
         with pytest.raises(DecryptionError, match="needs an"):
             open_sealed(mlkem_key, blob)
+
+
+class _ShortReader(io.RawIOBase):
+    """A raw stream that returns at most ``chunk`` bytes per read.
+
+    Raw files, sockets and pipes all behave like this; ``read(n)`` returning
+    fewer than ``n`` bytes before end of stream is legitimate.
+    """
+
+    def __init__(self, data: bytes, chunk: int) -> None:
+        self._buffer = io.BytesIO(data)
+        self._chunk = chunk
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, target) -> int:
+        view = memoryview(target)[: self._chunk]
+        return self._buffer.readinto(view)
+
+
+class _ShortWriter(io.RawIOBase):
+    """A raw stream that accepts at most ``chunk`` bytes per write."""
+
+    def __init__(self, chunk: int) -> None:
+        self.sink = io.BytesIO()
+        self._chunk = chunk
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, data) -> int:
+        return self.sink.write(bytes(data[: self._chunk]))
+
+
+class TestPartialReadsAndWrites:
+    """Short reads and writes must not change the container.
+
+    ``encrypt_stream`` used plain ``read(segment_size)``. A source returning
+    fewer bytes per call produced short interior segments; encryption
+    succeeded, and the reader -- which splits at fixed boundaries -- rejected
+    segment 0. The plaintext was recoverable only from the original.
+    """
+
+    def test_short_reads_round_trip(self, x25519_key):
+        data = bytes(range(256)) * 100  # 25,600 bytes: six full segments plus
+        source = _ShortReader(data, chunk=1000)
+        out = io.BytesIO()
+        encrypt_stream(x25519_key.public_key(), source, out, segment_size=SEGMENT)
+        assert open_sealed(x25519_key, out.getvalue()) == data
+
+    def test_short_reads_produce_the_same_framing_as_full_reads(self, x25519_key):
+        """Segment lengths depend only on the plaintext length, not on reads."""
+        data = b"z" * (SEGMENT * 2 + 5)
+        out = io.BytesIO()
+        encrypt_stream(
+            x25519_key.public_key(), _ShortReader(data, 7), out, segment_size=SEGMENT
+        )
+        reference = seal(x25519_key, data)
+        assert len(out.getvalue()) == len(reference)
+
+    def test_decrypting_from_a_short_reader(self, x25519_key):
+        data = b"q" * (SEGMENT * 3 + 1)
+        blob = bytes(seal(x25519_key, data))
+        out = io.BytesIO()
+        decrypt_stream(x25519_key, _ShortReader(blob, 333), out)
+        assert out.getvalue() == data
+
+    def test_short_writes_are_completed(self, x25519_key):
+        data = b"w" * (SEGMENT * 2 + 9)
+        sink = _ShortWriter(chunk=100)
+        encrypt_stream(
+            x25519_key.public_key(), io.BytesIO(data), sink, segment_size=SEGMENT
+        )
+        assert open_sealed(x25519_key, sink.sink.getvalue()) == data
+
+        plain = _ShortWriter(chunk=50)
+        decrypt_stream(x25519_key, io.BytesIO(sink.sink.getvalue()), plain)
+        assert plain.sink.getvalue() == data
+
+    def test_a_sink_returning_none_is_treated_as_complete(self, x25519_key):
+        """Arbitrary file-likes that return nothing kept working before; still do."""
+
+        class Sink:
+            def __init__(self) -> None:
+                self.parts: list[bytes] = []
+
+            def write(self, data):
+                self.parts.append(bytes(data))
+
+        sink = Sink()
+        encrypt_stream(x25519_key.public_key(), io.BytesIO(b"abc"), sink)
+        assert open_sealed(x25519_key, b"".join(sink.parts)) == b"abc"
+
+    def test_a_sink_that_accepts_nothing_raises_rather_than_spinning(self, x25519_key):
+        class Stuck(io.RawIOBase):
+            def writable(self) -> bool:
+                return True
+
+            def write(self, data) -> int:
+                return 0
+
+        with pytest.raises(OSError, match="accepted no bytes"):
+            encrypt_stream(x25519_key.public_key(), io.BytesIO(b"abc"), Stuck())
+
+    @given(
+        size=st.integers(min_value=0, max_value=SEGMENT * 4),
+        chunk=st.integers(min_value=1, max_value=SEGMENT * 2),
+    )
+    @settings(max_examples=40, deadline=None)
+    def test_any_read_size_round_trips(self, x25519_key, size, chunk):
+        data = bytes(i % 251 for i in range(size))
+        out = io.BytesIO()
+        encrypt_stream(
+            x25519_key.public_key(),
+            _ShortReader(data, chunk),
+            out,
+            segment_size=SEGMENT,
+        )
+        assert open_sealed(x25519_key, out.getvalue()) == data

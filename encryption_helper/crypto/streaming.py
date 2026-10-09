@@ -195,9 +195,7 @@ def encrypt_stream(  # noqa: PLR0913 - three of six are keyword-only options
     prefix = os.urandom(_PREFIX_SIZE)
     stream_header = _STREAM_HEADER_STRUCT.pack(segment_size) + prefix
 
-    destination.write(header)
-    destination.write(encapsulation)
-    destination.write(stream_header)
+    _write_all(destination, header + encapsulation + stream_header)
 
     aead = AESGCM(content_key)
     aad = header + encapsulation + stream_header + associated_data
@@ -207,15 +205,23 @@ def encrypt_stream(  # noqa: PLR0913 - three of six are keyword-only options
     # Read one segment ahead, so the final segment can be flagged as final
     # without seeking or knowing the input length up front. That is what makes
     # this work on a pipe.
-    current = source.read(segment_size)
+    #
+    # Reads must be exact. The reader splits the ciphertext at fixed segment
+    # boundaries, so a segment shorter than ``segment_size`` anywhere but last
+    # makes every later boundary wrong and the container undecryptable. A
+    # plain ``read(n)`` may legitimately return fewer than ``n`` bytes before
+    # end of stream -- raw files, sockets and pipes all do -- and encryption
+    # would then succeed and produce a file nobody can open.
+    current = _read_exact(source, segment_size)
     while True:
-        following = source.read(segment_size)
+        following = _read_exact(source, segment_size)
         final = not following
         if number > _MAX_SEGMENTS:  # pragma: no cover - 256 PiB of input
             msg = "Input exceeds the maximum number of segments."
             raise InvalidArgumentError(msg)
-        destination.write(
-            aead.encrypt(_segment_nonce(prefix, number, final=final), current, aad)
+        _write_all(
+            destination,
+            aead.encrypt(_segment_nonce(prefix, number, final=final), current, aad),
         )
         total += len(current)
         if progress is not None:
@@ -229,7 +235,12 @@ def encrypt_stream(  # noqa: PLR0913 - three of six are keyword-only options
 
 
 def _read_exact(source: IO[bytes], count: int) -> bytes:
-    """Read exactly ``count`` bytes, or fewer at end of stream."""
+    """Read exactly ``count`` bytes, or fewer only at end of stream.
+
+    ``read(n)`` on a raw stream may return fewer than ``n`` bytes before the
+    end; this keeps reading until ``count`` bytes arrive or the stream is
+    exhausted, so a short result always means end of stream.
+    """
     chunks: list[bytes] = []
     remaining = count
     while remaining:
@@ -239,6 +250,26 @@ def _read_exact(source: IO[bytes], count: int) -> bytes:
         chunks.append(chunk)
         remaining -= len(chunk)
     return b"".join(chunks)
+
+
+def _write_all(destination: IO[bytes], data: bytes) -> None:
+    """Write all of ``data``, even to a raw stream that accepts it in parts.
+
+    ``RawIOBase.write`` returns how many bytes it took, which may be fewer
+    than offered; ignoring that silently drops the remainder. Buffered
+    streams take everything in one call. A ``None`` return is treated as
+    complete, as the previous single-call code did, so arbitrary file-like
+    sinks that return nothing keep working.
+    """
+    remaining = data
+    while remaining:
+        written = destination.write(remaining)
+        if written is None or written >= len(remaining):
+            return
+        if written <= 0:
+            msg = "The destination accepted no bytes; it may be non-blocking."
+            raise OSError(msg)
+        remaining = remaining[written:]
 
 
 def _parse_stream_header(
@@ -371,7 +402,7 @@ def decrypt_stream(
                 "a different key."
             )
             raise DecryptionError(msg) from exc
-        destination.write(plaintext)
+        _write_all(destination, plaintext)
         total += len(plaintext)
         if progress is not None:
             progress(total)
