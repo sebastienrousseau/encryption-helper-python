@@ -20,7 +20,6 @@ Run:
 
 from __future__ import annotations
 
-import resource
 import sys
 import time
 
@@ -35,8 +34,16 @@ from encryption_helper.crypto.streaming import (
 PAYLOAD_BYTES = 8 * 1024 * 1024
 
 
-def peak_memory_mib() -> float:
-    """Return this process's peak resident set size in MiB."""
+def peak_memory_mib() -> float | None:
+    """Return this process's peak resident set size in MiB, if measurable.
+
+    ``resource`` is POSIX-only, so on Windows this returns ``None`` and the
+    example reports the figure as unavailable rather than failing.
+    """
+    try:
+        import resource  # noqa: PLC0415 - POSIX-only, imported where used
+    except ImportError:  # pragma: no cover - Windows
+        return None
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     # ru_maxrss is reported in kilobytes on Linux and in bytes on macOS.
     divisor = 1024 * 1024 if sys.platform == "darwin" else 1024
@@ -89,7 +96,9 @@ def main() -> int:
     print(f"Encrypt          {encrypt_seconds:.2f}s  {mib / encrypt_seconds:.0f} MiB/s")
     print(f"Decrypt          {decrypt_seconds:.2f}s  {mib / decrypt_seconds:.0f} MiB/s")
     print(f"Ciphertext       +{overhead} bytes of framing and tags")
-    print(f"Peak memory      {peak_memory_mib():.0f} MiB")
+    peak = peak_memory_mib()
+    shown = "unavailable on this platform" if peak is None else f"{peak:.0f} MiB"
+    print(f"Peak memory      {shown}")
     print(f"Round trip       {written} bytes out, {read_back} bytes back, identical")
     print()
     print("Peak memory does not scale with the payload: each segment is")

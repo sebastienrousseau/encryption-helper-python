@@ -151,7 +151,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: python -m pip install --upgrade pip -e . pytest ruff mypy
+      # pytest-cov too: the shared pyproject.toml configures coverage, so the
+      # `--no-cov` below is an unknown argument without the plugin installed.
+      - run: python -m pip install --upgrade pip -e . pytest pytest-cov ruff mypy
       - run: ruff check packages/
       - run: ruff format --check packages/
       - run: mypy --strict packages/encryption-helper-mcp/encryption_helper_mcp
