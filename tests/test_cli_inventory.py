@@ -8,8 +8,9 @@ secret, so the tests check that property explicitly as well as the output.
 
 from __future__ import annotations
 
+import pytest
 from encryption_helper import encode_public_key, encrypt, generate
-from encryption_helper.cli import EXIT_ERROR, EXIT_OK, main
+from encryption_helper.cli import EXIT_ERROR, EXIT_FINDINGS, EXIT_OK, EXIT_USAGE, main
 
 from ._support import result_of
 
@@ -158,9 +159,37 @@ class TestScan:
         assert main(["scan", str(self._tree(tmp_path))]) == EXIT_OK
 
     def test_fail_on_finding_gates_a_pipeline(self, tmp_path):
-        assert (
-            main(["scan", "--fail-on-finding", str(self._tree(tmp_path))]) == EXIT_ERROR
-        )
+        """Findings exit 5, distinct from 1, which means the scan itself failed."""
+        tree = str(self._tree(tmp_path))
+        assert main(["scan", "--fail-on-finding", tree]) == EXIT_FINDINGS
+        assert EXIT_FINDINGS != EXIT_ERROR
+
+    def test_findings_are_still_a_successful_json_result(self, tmp_path, capsys):
+        tree = str(self._tree(tmp_path))
+        assert main(["--json", "scan", "--fail-on-finding", tree]) == EXIT_FINDINGS
+        assert result_of(capsys.readouterr().out)["summary"]["needs_attention"] > 0
+
+    def test_a_missing_path_cannot_pass_the_gate(self, tmp_path, capsys):
+        """It printed "No recognised cryptographic material found" and exited 0."""
+        missing = str(tmp_path / "mistyped")
+        with pytest.raises(SystemExit) as excinfo:
+            main(["scan", "--fail-on-finding", missing])
+        assert excinfo.value.code == EXIT_USAGE
+        assert "No such file or directory" in capsys.readouterr().err
+
+    def test_one_missing_path_among_several_is_still_an_error(self, tmp_path):
+        with pytest.raises(SystemExit) as excinfo:
+            main(["scan", str(tmp_path), str(tmp_path / "nope")])
+        assert excinfo.value.code == EXIT_USAGE
+
+    def test_a_dangling_symlink_is_not_reported_missing(self, tmp_path):
+        """It exists as a link; the walker decides what to do with it."""
+        link = tmp_path / "dangling"
+        try:
+            link.symlink_to(tmp_path / "absent")
+        except OSError:  # pragma: no cover - Windows without symlink rights
+            pytest.skip("symlinks unavailable")
+        assert main(["scan", str(link)]) == EXIT_OK
 
     def test_fail_on_finding_passes_a_clean_tree(self, tmp_path):
         key = generate("mlkem")

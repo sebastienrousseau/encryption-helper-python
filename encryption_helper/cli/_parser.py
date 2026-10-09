@@ -419,9 +419,10 @@ def _add_scan(sub: _SubParsers) -> None:
         "--fail-on-finding",
         action="store_true",
         help=(
-            "Exit non-zero if anything needs migration or manual review, so "
-            "the scan can gate a pipeline. Off by default, because reporting "
-            "an inventory is not itself a failure."
+            "Exit 5 if anything needs migration or manual review, so the "
+            "scan can gate a pipeline. Off by default, because reporting an "
+            "inventory is not itself a failure. A failure of the scan itself "
+            "exits 1, and a path that does not exist exits 2."
         ),
     )
     scn.set_defaults(func=_cmd_scan)

@@ -326,8 +326,11 @@ estate/statements.pub.pem                public-key             mlkem-768    non
 - `--json` emits the versioned contract in
   [`docs/schemas/cli-output-v1.json`](./docs/schemas/cli-output-v1.json), for
   an inventory system or CMDB.
-- `--fail-on-finding` exits non-zero when anything needs attention, so a
-  pipeline can stop new quantum-vulnerable material being committed.
+- `--fail-on-finding` exits `5` when anything needs attention, so a
+  pipeline can stop new quantum-vulnerable material being committed. That
+  is distinct from `1`, a failure of the scan itself, and `2`, a path that
+  does not exist -- a mistyped path must not pass the gate by examining
+  nothing.
 
 The same assessment is available from Python (`encryption_helper.scan`,
 `encryption_helper.assess`) and, read-only, to an AI assistant through the
@@ -442,6 +445,7 @@ world-readable.
 | `2` | Usage error — bad or missing arguments |
 | `3` | A destination exists and `--force` was not given |
 | `4` | Decryption or signature verification failed |
+| `5` | `scan --fail-on-finding` found findings needing attention |
 
 ---
 

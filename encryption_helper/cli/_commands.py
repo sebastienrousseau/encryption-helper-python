@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import io
 import logging
+import os
 import sys
 from typing import Any
 
@@ -54,10 +55,10 @@ from ..policy import (
 from ._constants import (
     _AEAD_ID_OFFSET,
     _PEEK_SIZE,
-    EXIT_ERROR,
+    EXIT_FINDINGS,
     EXIT_OK,
 )
-from ._output import _emit, runtime_version
+from ._output import _emit, _fail_usage, runtime_version
 from ._passphrase import (
     _load_private_key,
     _new_key_passphrase,
@@ -514,6 +515,12 @@ def _cmd_scan(args: argparse.Namespace) -> int:
     needing manual review rather than unlocked: a scan is not a reason to
     handle a passphrase.
     """
+    # A path that does not exist is an operator error, not an empty tree.
+    # Treating it as empty let `scan --fail-on-finding /mistyped` pass a
+    # pipeline gate while examining nothing.
+    missing = [p for p in args.paths if not os.path.lexists(p)]
+    if missing:
+        _fail_usage(f"No such file or directory: {', '.join(missing)}")
     findings = scan(args.paths)
     summary = summarise(findings)
     payload: dict[str, Any] = {
@@ -524,5 +531,5 @@ def _cmd_scan(args: argparse.Namespace) -> int:
     _emit(args, "\n".join(_scan_rows(findings, summary)), payload)
 
     if args.fail_on_finding and summary["needs_attention"]:
-        return EXIT_ERROR
+        return EXIT_FINDINGS
     return EXIT_OK

@@ -41,6 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `readable` in `inspect` output is true only when this build can decrypt
   the container. It was `version <= current`, so version 0 claimed to be
   readable.
+- **`scan --fail-on-finding` can no longer be passed by a mistyped path.**
+  A path that did not exist was treated as an empty tree, so the gate
+  printed "No recognised cryptographic material found" and exited 0. It is
+  now a usage error (exit 2). Findings exit with a new code, 5, instead of
+  1, so a pipeline can tell "the tree has findings" from "the scanner
+  failed"; the JSON result remains a normal `status: ok` document.
 - **Migration dates now follow security strength, as NIST's do.** Every
   classical algorithm was reported as "deprecated 2030, disallowed 2035".
   That is correct only for 112-bit keys such as RSA-2048 and P-224. It

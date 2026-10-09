@@ -14,6 +14,7 @@ Exit codes:
 2    Usage error -- bad or missing arguments.
 3    A destination file already exists and ``--force`` was not given.
 4    Decryption or signature verification failed.
+5    ``scan --fail-on-finding`` found material needing attention.
 ===  ============================================================
 
 Passphrases are never accepted as a command-line value. Process arguments are
@@ -34,6 +35,7 @@ from ._constants import (
     DEFAULT_MAX_INPUT_BYTES,
     EXIT_CRYPTO_FAILURE,
     EXIT_ERROR,
+    EXIT_FINDINGS,
     EXIT_KEY_EXISTS,
     EXIT_OK,
     EXIT_USAGE,
@@ -47,6 +49,7 @@ __all__ = [
     "DEFAULT_MAX_INPUT_BYTES",
     "EXIT_CRYPTO_FAILURE",
     "EXIT_ERROR",
+    "EXIT_FINDINGS",
     "EXIT_KEY_EXISTS",
     "EXIT_OK",
     "EXIT_USAGE",

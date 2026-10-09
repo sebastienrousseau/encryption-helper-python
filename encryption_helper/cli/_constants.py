@@ -15,6 +15,11 @@ EXIT_ERROR: Final = 1
 EXIT_USAGE: Final = 2
 EXIT_KEY_EXISTS: Final = 3
 EXIT_CRYPTO_FAILURE: Final = 4
+#: ``scan --fail-on-finding`` found material that needs attention. Distinct
+#: from :data:`EXIT_ERROR` so a pipeline can tell "the tree has findings"
+#: from "the scanner failed": the run itself succeeded, and its JSON result
+#: is a normal ``status: ok`` document.
+EXIT_FINDINGS: Final = 5
 
 #: Version of the ``--json`` output contract.
 #:

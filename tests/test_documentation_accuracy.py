@@ -28,6 +28,7 @@ from encryption_helper import errors
 from encryption_helper.cli import (
     EXIT_CRYPTO_FAILURE,
     EXIT_ERROR,
+    EXIT_FINDINGS,
     EXIT_KEY_EXISTS,
     EXIT_OK,
     EXIT_USAGE,
@@ -122,6 +123,7 @@ class TestCliDocumentation:
             EXIT_USAGE: "usage",
             EXIT_KEY_EXISTS: "exists",
             EXIT_CRYPTO_FAILURE: "failed",
+            EXIT_FINDINGS: "findings",
         }
         rows = dict(re.findall(r"^\| `(\d)` \| ([^|]+?) \|", readme, re.M))
         assert rows, "the exit-code table is missing from the README"
