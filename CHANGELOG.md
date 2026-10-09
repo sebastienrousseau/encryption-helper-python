@@ -107,6 +107,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A release must now pass CI on the tagged commit before it can publish**,
+  and the tag must match the package version. Release and CI build tools
+  (`build`, `twine`, `cyclonedx-bom`) are installed from hashes
+  (`requirements/release.txt`), because they run in the job that produces
+  the published wheel. The SBOM now describes the package -- the wheel and
+  its install closure -- rather than the build runner, and is kept out of
+  `dist/`, which is published verbatim. The container image pins its base by
+  digest and installs every dependency and the build backend from hashes;
+  `requirements/runtime.txt` is held equal to `poetry.lock` by a test.
+  Renovate pins Docker digests and no longer automerges dev tooling.
 - **Known-answer vectors for container version 1** (`tests/vectors/v1.json`):
   one-shot and streaming containers for every mechanism, written once and
   never regenerated. Every earlier encryption test was a round trip through

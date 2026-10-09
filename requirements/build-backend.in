@@ -1,0 +1,5 @@
+# The PEP 517 build backend, installed from hashes in the container build
+# so that `pip wheel` runs with --no-build-isolation instead of fetching
+# poetry-core unpinned. Must satisfy [build-system] in pyproject.toml.
+#
+# Regenerate with: python scripts/compile_requirements.py

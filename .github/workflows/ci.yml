@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # The release workflow runs this whole suite on the tagged commit before
+  # anything is built for PyPI.
+  workflow_call:
 
 # Least privilege by default. Individual jobs escalate only what they need.
 permissions:
@@ -253,9 +256,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
-          python-version: "3.12"
+          python-version: "3.14"
           cache: pip
-      - run: python -m pip install --upgrade pip build twine
+      # The same hash-locked tools the release uses, so CI builds the wheel
+      # the way a release would.
+      - run: python -m pip install --require-hashes -r requirements/release.txt
       - run: python -m build
       - run: twine check --strict dist/*
       - name: Verify the type marker ships in the wheel
@@ -304,22 +309,29 @@ jobs:
             | grep -qx secret \
             || { echo "::error::encrypt/decrypt round trip failed"; exit 1; }
           echo "Wheel smoke test passed."
-      # SBOM for the built distribution. Listed in the original plan and
-      # never implemented until now; pip-audit, Scorecard and build
-      # attestation were present, this was not.
-      # SBOM for the built distribution.
-      - name: Generate CycloneDX SBOM
+      # SBOM for the package: the wheel and its install closure, from a venv
+      # holding nothing else -- not the runner's environment, which listed the
+      # build tools. Written outside dist/, which is published verbatim.
+      - name: Generate CycloneDX SBOM for the wheel
         run: |
-          python -m pip install --quiet cyclonedx-bom
-          python -m cyclonedx_py environment             --output-format JSON             --output-file dist/encryption-helper.cdx.json
-      - name: Verify the SBOM lists the runtime dependency
-        run: >-
-          python -c "import json,sys;
-          s=json.load(open('dist/encryption-helper.cdx.json'));
-          c=s.get('components',[]);
-          names={x['name'] for x in c};
-          sys.exit('SBOM missing cryptography') if 'cryptography' not in names
-          else print(f'SBOM lists {len(c)} components')"
+          python -m venv --without-pip "$RUNNER_TEMP/sbom-env"
+          python -m pip --python "$RUNNER_TEMP/sbom-env/bin/python" install dist/*.whl
+          mkdir -p sbom
+          python -m cyclonedx_py environment \
+            --mc-type library \
+            --output-format JSON \
+            --output-file sbom/encryption-helper.cdx.json \
+            "$RUNNER_TEMP/sbom-env/bin/python"
+      - name: Verify the SBOM describes the package
+        run: |
+          python - <<'PY'
+          import json, sys
+          names = {c["name"] for c in json.load(open("sbom/encryption-helper.cdx.json"))["components"]}
+          missing = {"encryption-helper", "cryptography"} - names
+          if missing:
+              sys.exit(f"SBOM is missing {sorted(missing)}")
+          print(f"SBOM components: {sorted(names)}")
+          PY
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: distribution

@@ -1,0 +1,5 @@
+# Tools the release and build jobs run, compiled with hashes into
+# release.txt. They run in the job that produces the published wheel, so an
+# unpinned upstream release could alter the artifact before it is attested.
+#
+# Regenerate with: python scripts/compile_requirements.py

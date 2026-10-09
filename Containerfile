@@ -66,7 +66,9 @@
 # backend (poetry-core) and pip's build scratch space out of the shipped
 # filesystem, so the image that reaches a reviewer contains the distribution
 # that would be published to an index and nothing that produced it.
-FROM python:3.12-slim AS build
+# Pinned by digest (the multi-arch index), so a re-tagged python:3.12-slim
+# cannot change what is built. Renovate proposes digest updates.
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS build
 
 # Byte-code in the build stage would be discarded anyway, and pip's cache and
 # version self-check add network calls and layer size without affecting the
@@ -87,20 +89,25 @@ WORKDIR /src
 # it governs the source distribution rather than the wheel.
 COPY pyproject.toml README.md LICENSE NOTICE ./
 COPY encryption_helper ./encryption_helper
+COPY requirements/runtime.txt requirements/build-backend.txt ./requirements/
 
-# `pip wheel` is used in preference to `python -m build` because it resolves
-# and materialises the full dependency closure -- the project wheel plus
-# `cryptography` and its own requirements -- into one directory. The next stage
-# can then install with `--no-index`, which means the runtime stage performs no
-# dependency resolution and cannot silently acquire a package that was not
-# present at build time.
-RUN python -m pip wheel --wheel-dir /wheels /src
+# Every byte fetched from an index is checked against a hash. The runtime
+# dependencies -- `cryptography` and its own requirements -- come from
+# requirements/runtime.txt, whose pins equal poetry.lock's, so the image runs
+# what CI tested. The build backend comes from requirements/build-backend.txt
+# and the project wheel is built with --no-build-isolation, because build
+# isolation would otherwise fetch poetry-core unpinned. Everything lands in one
+# directory, so the next stage installs with `--no-index`: it performs no
+# resolution and cannot acquire a package that was not present here.
+RUN python -m pip install --require-hashes -r requirements/build-backend.txt \
+ && python -m pip wheel --require-hashes --wheel-dir /wheels -r requirements/runtime.txt \
+ && python -m pip wheel --no-deps --no-build-isolation --wheel-dir /wheels /src
 
 # The MCP server's only dependency is the package just built, so it is built
 # with `--no-deps`. Resolving it against an index could otherwise substitute a
 # different published release of `encryption-helper` for the one built here.
 COPY packages/encryption-helper-mcp /src-mcp
-RUN python -m pip wheel --no-deps --wheel-dir /wheels-mcp /src-mcp
+RUN python -m pip wheel --no-deps --no-build-isolation --wheel-dir /wheels-mcp /src-mcp
 
 # Only the numbered examples and their shared helper. Copied here so the
 # `examples` target takes them from a build stage, like everything else.
@@ -109,7 +116,7 @@ COPY examples/_workspace.py examples/[0-9]*.py /examples/
 # ---------------------------------------------------------------------------
 # Stage 2: runtime
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim AS runtime
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS runtime
 
 # Version is an argument so that a release pipeline can stamp the label without
 # editing this file. The default must track the `version` field in
