@@ -173,6 +173,32 @@ class TestClassification:
 class TestScanHazards:
     """What a scanner must survive in a directory it did not create."""
 
+    def test_a_truncated_container_header_does_not_end_the_scan(self, tmp_path):
+        """Five bytes of magic and version used to abort the whole inventory."""
+        key = generate("ed25519")
+        (tmp_path / "a.pub").write_bytes(encode_public_key(key.public_key()))
+        (tmp_path / "b.enc").write_bytes(b"EHEV\x01")
+
+        findings = {f.path.name: f for f in scan([tmp_path])}
+        assert set(findings) == {"a.pub", "b.enc"}
+        broken = findings["b.enc"]
+        assert broken.kind == KIND_CONTAINER
+        assert broken.undetermined
+        assert broken.needs_attention
+        assert "incomplete" in broken.detail
+
+    def test_an_unknown_mechanism_needs_attention_not_a_pass(self, tmp_path):
+        key = generate("mlkem")
+        blob = bytearray(encrypt(key.public_key(), b"payload"))
+        blob[5] = 99
+        (tmp_path / "future.enc").write_bytes(bytes(blob))
+
+        (finding,) = scan([tmp_path])
+        assert finding.quantum_vulnerable is None
+        assert finding.needs_attention
+        assert "No migration" not in finding.detail
+        assert "unrecognised mechanism identifier 99" in finding.detail
+
     @posix_only
     def test_a_symlink_to_another_tree_is_not_followed(self, tmp_path):
         """Otherwise a planted link turns one scan into a filesystem scan."""

@@ -428,17 +428,23 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
         header = source.read(HEADER_SIZE)
 
     info = describe_container(header)
-    posture_note = (
-        "Vulnerable to a quantum computer. Data recorded now can be decrypted "
-        "once a cryptanalytically relevant quantum computer exists, so this "
-        "file should be re-encrypted if its confidentiality must outlast that "
-        "point."
-        if info.quantum_vulnerable
-        else "Uses a NIST post-quantum standard. No migration is required."
-    )
+    if info.quantum_vulnerable is None:
+        posture_note = (
+            "Unrecognised key-establishment mechanism: its quantum resistance "
+            "cannot be established. Review this file manually."
+        )
+    elif info.quantum_vulnerable:
+        posture_note = (
+            "Vulnerable to a quantum computer. Data recorded now can be "
+            "decrypted once a cryptanalytically relevant quantum computer "
+            "exists, so this file should be re-encrypted if its "
+            "confidentiality must outlast that point."
+        )
+    else:
+        posture_note = "Uses a NIST post-quantum standard. No migration is required."
     rows = [
         f"Format version:     {info.format_version}"
-        + ("" if info.readable else "  (too new for this build to read)"),
+        + ("" if info.readable else "  (this build cannot read it)"),
         f"Key establishment:  {info.key_establishment or 'unrecognised'}"
         + (
             f"  [{info.key_establishment_standard}]"

@@ -253,6 +253,14 @@ MUTATIONS: tuple[Mutation, ...] = (
         tests=("tests/test_release_candidate.py",),
     ),
     Mutation(
+        id="posture-allow-list",
+        property="an unrecognised mechanism is never reported as quantum-safe",
+        path="encryption_helper/crypto/metadata.py",
+        old="    else:\n        quantum_vulnerable = None",
+        new="    else:\n        quantum_vulnerable = False",
+        tests=("tests/crypto/test_metadata.py",),
+    ),
+    Mutation(
         id="cli-stdout-purity",
         property="a report never lands in data written to stdout",
         path="encryption_helper/cli/_output.py",

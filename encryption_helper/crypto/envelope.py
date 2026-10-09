@@ -86,6 +86,11 @@ SUPPORTED_KEMS: Final = frozenset(
 #: Mechanisms that a sufficiently large quantum computer breaks.
 QUANTUM_VULNERABLE_KEMS: Final = frozenset({KEM_RSA_OAEP_SHA256, KEM_X25519_HKDF})
 
+#: Mechanisms positively known to be post-quantum. A report may say "no
+#: migration required" only for these: an identifier on neither list is
+#: unknown, and unknown is never safe.
+POST_QUANTUM_KEMS: Final = frozenset({KEM_MLKEM768, KEM_MLKEM1024})
+
 #: AEAD identifiers.
 #:
 #: One-shot holds the whole message in memory; streaming segments it, so a

@@ -30,6 +30,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one-shot reader's and never checked `kem_id`; an unknown identifier fell
   through to the X25519 path. Both readers now share one validator, and
   decapsulation fails closed rather than defaulting to a mechanism.
+- **`inspect` and `scan` no longer call an unrecognised mechanism safe.**
+  Quantum posture was a deny-list, so any key-establishment identifier this
+  build did not know was reported as not vulnerable and `inspect` printed
+  "No migration is required." Posture is now an allow-list:
+  `quantum_vulnerable` is `null` for an unknown mechanism, the report says
+  it cannot be established, and `scan` counts it as needing attention.
+- `scan` records a file with the container magic but an incomplete header
+  as a finding, instead of abandoning the whole inventory on it.
+- `readable` in `inspect` output is true only when this build can decrypt
+  the container. It was `version <= current`, so version 0 claimed to be
+  readable.
 - **Migration dates now follow security strength, as NIST's do.** Every
   classical algorithm was reported as "deprecated 2030, disallowed 2035".
   That is correct only for 112-bit keys such as RSA-2048 and P-224. It

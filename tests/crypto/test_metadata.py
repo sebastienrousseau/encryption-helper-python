@@ -182,3 +182,43 @@ class TestHeaderLayoutIsNotDuplicated:
         other.
         """
         assert HEADER_STRUCT.size == HEADER_SIZE
+
+
+class TestPostureIsAnAllowList:
+    """ "Safe" must be positively known; an unknown mechanism is never safe.
+
+    The posture was computed as ``kem_id in QUANTUM_VULNERABLE_KEMS``, a
+    deny-list, so any identifier this build did not recognise -- a newer
+    build's mechanism, or a corrupted byte -- was reported as not
+    vulnerable, and ``inspect`` printed "No migration is required."
+    """
+
+    @pytest.mark.parametrize("kem_id", [0, 5, 99, 255])
+    def test_an_unrecognised_mechanism_is_undetermined(self, kem_id):
+        info = describe_container(header(kem_id=kem_id))
+        assert info.quantum_vulnerable is None
+        assert info.key_establishment is None
+        assert info.as_dict()["quantum_vulnerable"] is None
+
+    @pytest.mark.parametrize(
+        ("kem_id", "expected"), [(1, True), (2, False), (3, False), (4, True)]
+    )
+    def test_every_known_mechanism_has_a_definite_posture(self, kem_id, expected):
+        assert describe_container(header(kem_id=kem_id)).quantum_vulnerable is expected
+
+
+class TestReadableMeansDecryptable:
+    def test_an_older_version_is_not_readable(self):
+        """It used to be ``version <= VERSION``, so version 0 claimed readable."""
+        assert describe_container(header(version=0)).readable is False
+
+    def test_an_unknown_mechanism_is_not_readable(self):
+        assert describe_container(header(kem_id=99)).readable is False
+
+    def test_an_unknown_content_mode_is_not_readable(self):
+        assert describe_container(header(aead_id=9)).readable is False
+
+    def test_a_streaming_container_is_readable(self):
+        assert (
+            describe_container(header(aead_id=AEAD_AES_256_GCM_STREAM)).readable is True
+        )

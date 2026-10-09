@@ -36,6 +36,17 @@ class TestInspect:
         assert result["key_establishment"] == "ml-kem-768"
         assert result["quantum_vulnerable"] is False
 
+    def test_an_unknown_mechanism_is_never_reported_safe(self, tmp_path, capsys):
+        path = _container(tmp_path)
+        blob = bytearray(path.read_bytes())
+        blob[5] = 99
+        path.write_bytes(bytes(blob))
+        assert main(["inspect", "--in", str(path)]) == EXIT_OK
+        out = capsys.readouterr().out
+        assert "No migration is required" not in out
+        assert "cannot be established" in out
+        assert "this build cannot read it" in out
+
     def test_a_classical_container_is_flagged(self, tmp_path, capsys):
         path = _container(tmp_path, algorithm="rsa")
         assert main(["inspect", "--in", str(path)]) == EXIT_OK

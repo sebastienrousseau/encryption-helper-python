@@ -44,7 +44,9 @@ from .envelope import (
     KEM_RSA_OAEP_SHA256,
     KEM_X25519_HKDF,
     MAGIC,
+    POST_QUANTUM_KEMS,
     QUANTUM_VULNERABLE_KEMS,
+    SUPPORTED_KEMS,
     VERSION,
 )
 
@@ -87,10 +89,11 @@ class ContainerInfo:
     """What a container's header states about itself.
 
     Attributes:
-        format_version: Container format version. A value above
-            :data:`~encryption_helper.crypto.envelope.VERSION` cannot be read
-            by this build.
-        readable: Whether this build can read this format version.
+        format_version: Container format version.
+        readable: Whether this build can decrypt the container: the format
+            version, key-establishment mechanism and content-encryption mode
+            must all be ones it implements. Version 0, for instance, is not
+            readable, although it is lower than the current version.
         key_establishment: Name of the mechanism protecting the content key,
             or :data:`None` if the identifier is not one this build knows.
         key_establishment_id: The raw identifier from the header.
@@ -106,6 +109,8 @@ class ContainerInfo:
             by a cryptanalytically relevant quantum computer. For stored
             data this is a present concern, not a future one: a container
             recorded today can be decrypted once such a computer exists.
+            :data:`None` when the mechanism is unrecognised: an unknown
+            mechanism is never reported as safe.
     """
 
     format_version: int
@@ -116,7 +121,7 @@ class ContainerInfo:
     content_encryption: str | None
     content_encryption_id: int
     segmented: bool
-    quantum_vulnerable: bool
+    quantum_vulnerable: bool | None
 
     def as_dict(self) -> dict[str, object]:
         """Return the description as a JSON-serialisable mapping."""
@@ -189,14 +194,22 @@ def describe_container(blob: bytes) -> ContainerInfo:
         raise InvalidArgumentError(msg)
 
     _, version, kem_id, aead_id, _, _ = HEADER_STRUCT.unpack(blob[:HEADER_SIZE])
+    if kem_id in QUANTUM_VULNERABLE_KEMS:
+        quantum_vulnerable: bool | None = True
+    elif kem_id in POST_QUANTUM_KEMS:
+        quantum_vulnerable = False
+    else:
+        quantum_vulnerable = None
     return ContainerInfo(
         format_version=version,
-        readable=version <= VERSION,
+        readable=(
+            version == VERSION and kem_id in SUPPORTED_KEMS and aead_id in _AEAD_NAMES
+        ),
         key_establishment=_KEM_NAMES.get(kem_id),
         key_establishment_id=kem_id,
         key_establishment_standard=_KEM_STANDARDS.get(kem_id),
         content_encryption=_AEAD_NAMES.get(aead_id),
         content_encryption_id=aead_id,
         segmented=aead_id == AEAD_AES_256_GCM_STREAM,
-        quantum_vulnerable=kem_id in QUANTUM_VULNERABLE_KEMS,
+        quantum_vulnerable=quantum_vulnerable,
     )

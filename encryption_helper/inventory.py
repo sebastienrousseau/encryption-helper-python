@@ -71,6 +71,7 @@ from cryptography.hazmat.primitives.asymmetric import (
 from cryptography.hazmat.primitives.asymmetric.types import PublicKeyTypes
 
 from .crypto import metadata
+from .errors import InvalidArgumentError
 from .policy import NIST_LEGACY_DISALLOWED_FROM, assess
 
 __all__ = [
@@ -354,14 +355,38 @@ def _try_container(path: Path, blob: bytes) -> Finding | None:
     """Classify ``blob`` as a container produced by this library."""
     if not metadata.is_container(blob):
         return None
-    info = metadata.describe_container(blob)
+    try:
+        info = metadata.describe_container(blob)
+    except InvalidArgumentError:
+        # The magic matched but the header is incomplete. That is one bad
+        # file, not a reason to abandon the inventory: a single five-byte
+        # file would otherwise end the scan of an entire tree.
+        return Finding(
+            path=path,
+            kind=KIND_CONTAINER,
+            algorithm=None,
+            key_size=None,
+            quantum_vulnerable=None,
+            deprecated_from=None,
+            disallowed_from=None,
+            replacements=(),
+            detail=(
+                "Starts with the container magic number but the header is "
+                "incomplete. Review it manually."
+            ),
+        )
     name = info.key_establishment or f"identifier {info.key_establishment_id}"
-    if not info.quantum_vulnerable:
+    replacements: tuple[str, ...] = ()
+    if info.quantum_vulnerable is None:
+        detail = (
+            f"Encrypted file using unrecognised mechanism {name}. Its "
+            "quantum resistance cannot be established; review it manually."
+        )
+    elif not info.quantum_vulnerable:
         detail = (
             f"Encrypted file using {name}, a NIST post-quantum standard. "
             "No migration is required."
         )
-        replacements: tuple[str, ...] = ()
     else:
         detail = (
             f"Encrypted file using {name}. Data recorded now can be "
