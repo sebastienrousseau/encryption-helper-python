@@ -99,7 +99,8 @@ def _as_passphrase_bytes(value: str | bytes) -> bytes:
         value: Passphrase text or raw bytes.
 
     Returns:
-        The passphrase as bytes, ready for ``BestAvailableEncryption``.
+        The passphrase as bytes, ready for
+        :func:`~encryption_helper.keys.serialize.encode_private_key`.
 
     Example:
         >>> _as_passphrase_bytes("secret")

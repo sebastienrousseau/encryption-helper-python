@@ -564,7 +564,7 @@ encryption-helper-mcp --root /path/to/inspect
 | -------- | --------- |
 | File permissions | `0600` for private keys, inside a `0700` directory. Not subject to the umask |
 | Printing / logging | Private key material is never printed or logged, at any verbosity |
-| At rest | Optionally encrypted with a passphrase (`BestAvailableEncryption`) |
+| At rest | Optionally encrypted with a passphrase: PKCS#8 PBES2, PBKDF2-HMAC-SHA256 at 600,000 iterations, AES-256-CBC. Older keys at `cryptography`'s default of 2,048 iterations still load, with a warning; `convert --private` re-protects them |
 | Plaintext keys | Never a default; requires an explicit `--no-passphrase` |
 | Overwrites | Refused by default; `--force` backs up the previous key first |
 | Atomicity | Temporary file plus `rename`, so an interrupted run cannot truncate a key |

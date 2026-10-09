@@ -297,6 +297,14 @@ MUTATIONS: tuple[Mutation, ...] = (
         tests=("tests/test_secure_write_stream.py",),
     ),
     Mutation(
+        id="keys-kdf-cost",
+        property="a passphrase-protected key costs 600,000 PBKDF2 iterations",
+        path="encryption_helper/keys/_pkcs8.py",
+        old="PBKDF2_ITERATIONS: Final = 600_000",
+        new="PBKDF2_ITERATIONS: Final = 2_048",
+        tests=("tests/keys/test_pkcs8.py",),
+    ),
+    Mutation(
         id="cli-stdout-purity",
         property="a report never lands in data written to stdout",
         path="encryption_helper/cli/_output.py",

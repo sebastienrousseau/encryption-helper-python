@@ -13,6 +13,7 @@ distinction is only useful to someone probing a key they should not have.
 
 from __future__ import annotations
 
+import logging
 import os
 
 from cryptography.exceptions import UnsupportedAlgorithm
@@ -24,6 +25,9 @@ from cryptography.hazmat.primitives.asymmetric.types import (
 
 from .._io import read_bytes
 from ..errors import KeyReadError
+from . import _pkcs8
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "load_private_key",
@@ -70,16 +74,44 @@ def load_private_key(
         if b"OPENSSH PRIVATE KEY" in data:
             return serialization.load_ssh_private_key(data, password=passphrase)
         if data.lstrip().startswith(_PEM_MARKER):
-            return serialization.load_pem_private_key(data, password=passphrase)
-        return serialization.load_der_private_key(data, password=passphrase)
+            key = serialization.load_pem_private_key(data, password=passphrase)
+            der = _pkcs8.der_from_pem(data)
+        else:
+            key = serialization.load_der_private_key(data, password=passphrase)
+            der = data
     except (ValueError, TypeError, UnsupportedAlgorithm) as exc:
         last_error = exc
+    else:
+        _warn_if_weakly_protected(der)
+        return key
 
     msg = (
         "Could not load the private key. The data may be corrupt, in an "
         "unsupported format, or protected by a different passphrase."
     )
     raise KeyReadError(msg) from last_error
+
+
+def _warn_if_weakly_protected(der: bytes | None) -> None:
+    """Log a warning when a loaded key's passphrase protection is weak.
+
+    Keys written before this release, and by tools using
+    ``cryptography``'s default, are protected by PBKDF2 at 2,048
+    iterations. They still load -- refusing would lock people out of their
+    own keys -- but the owner should know, and know the fix.
+    """
+    if der is None:
+        return
+    iterations = _pkcs8.pbkdf2_iterations(der)
+    if iterations is not None and iterations < _pkcs8.WEAK_ITERATIONS_BELOW:
+        logger.warning(
+            "This private key's passphrase protection is weak (PBKDF2, %d "
+            "iterations; %d is used now), so a stolen copy is cheap to guess. "
+            "Re-protect it with: encryption-helper convert --private --to pem "
+            "--in KEY --out NEW",
+            iterations,
+            _pkcs8.PBKDF2_ITERATIONS,
+        )
 
 
 def load_public_key(data: bytes) -> PublicKeyTypes:

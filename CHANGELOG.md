@@ -71,6 +71,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   disposition killed the process without cleanup, leaving `decrypt`'s
   hidden temporary file in the destination directory. The CLI now unwinds
   on SIGTERM (exit 143), and the writer removes the file.
+- **Passphrase-protected keys are about 290 times harder to guess.**
+  `cryptography`'s `BestAvailableEncryption` protects PKCS#8 with PBKDF2 at
+  2,048 iterations, and offers no way to raise it. PEM and DER keys are now
+  written as the same standard PBES2 structure at 600,000 iterations of
+  PBKDF2-HMAC-SHA256 with AES-256-CBC, readable by OpenSSL and every
+  mainstream PKCS#8 reader. Existing keys still load, with a warning;
+  `convert --private` re-protects them. PBKDF2 was chosen over scrypt
+  because OpenSSL's default scrypt memory cap would reject a
+  recommended-strength scrypt key. Unlocking a key now takes about 0.1 s.
+- `keygen --format openssh` with a passphrase no longer crashes with
+  "unexpected internal error" when the optional `bcrypt` package is absent;
+  it reports that `bcrypt` is needed, or that `pem`/`der` can be used.
 - **Migration dates now follow security strength, as NIST's do.** Every
   classical algorithm was reported as "deprecated 2030, disallowed 2035".
   That is correct only for 112-bit keys such as RSA-2048 and P-224. It

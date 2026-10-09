@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Final
 
+from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.types import (
     PrivateKeyTypes,
@@ -19,6 +20,7 @@ from cryptography.hazmat.primitives.asymmetric.types import (
 )
 
 from ..errors import InvalidArgumentError, UnsupportedAlgorithmError
+from . import _pkcs8
 
 __all__ = [
     "SUPPORTED_PRIVATE_FORMATS",
@@ -49,6 +51,16 @@ def _encryption(passphrase: bytes | None) -> serialization.KeySerializationEncry
     """
     if passphrase is None:
         return serialization.NoEncryption()
+    _require_real_passphrase(passphrase)
+    return serialization.BestAvailableEncryption(passphrase)
+
+
+def _require_real_passphrase(passphrase: bytes) -> None:
+    """Refuse an empty passphrase, which would protect nothing.
+
+    Raises:
+        InvalidArgumentError: If ``passphrase`` is empty.
+    """
     if not passphrase:
         msg = (
             "An empty passphrase does not protect the key. Pass None "
@@ -56,7 +68,6 @@ def _encryption(passphrase: bytes | None) -> serialization.KeySerializationEncry
             "passphrase."
         )
         raise InvalidArgumentError(msg)
-    return serialization.BestAvailableEncryption(passphrase)
 
 
 def encode_private_key(
@@ -72,8 +83,13 @@ def encode_private_key(
         fmt: One of :data:`SUPPORTED_PRIVATE_FORMATS`. ``"pem"`` and ``"der"``
             produce PKCS#8; ``"openssh"`` produces the OpenSSH private key
             format.
-        passphrase: Optional passphrase. When supplied, the key is encrypted
-            with the best algorithm the installed backend offers.
+        passphrase: Optional passphrase. For ``"pem"`` and ``"der"`` the key
+            is written as standard PKCS#8 PBES2 using PBKDF2-HMAC-SHA256 at
+            :data:`~encryption_helper.keys._pkcs8.PBKDF2_ITERATIONS`
+            iterations and AES-256-CBC, which OpenSSL and every mainstream
+            PKCS#8 reader accept. ``cryptography``'s default for PKCS#8 is
+            2,048 iterations and cannot be raised. ``"openssh"`` uses the
+            OpenSSH format's own bcrypt KDF.
 
     Returns:
         The encoded key.
@@ -90,6 +106,8 @@ def encode_private_key(
         True
     """
     normalised = fmt.strip().lower()
+    if passphrase is not None and normalised in {"pem", "der"}:
+        return _strongly_protected_pkcs8(key, normalised, passphrase)
     encryption = _encryption(passphrase)
 
     if normalised == "pem":
@@ -115,6 +133,36 @@ def encode_private_key(
     except (ValueError, TypeError) as exc:
         msg = f"Cannot encode a {type(key).__name__} as {normalised}: {exc}"
         raise UnsupportedAlgorithmError(msg) from exc
+    except UnsupportedAlgorithm as exc:
+        # The OpenSSH format's KDF is bcrypt-pbkdf, which cryptography only
+        # provides when the optional `bcrypt` package is installed. This
+        # escaped untranslated, so `keygen --format openssh` with a
+        # passphrase ended in "unexpected internal error".
+        msg = (
+            "A passphrase-protected OpenSSH key needs the optional 'bcrypt' "
+            "package (pip install bcrypt). Alternatively use the pem or der "
+            "format, which is protected with PBKDF2 at "
+            f"{_pkcs8.PBKDF2_ITERATIONS:,} iterations."
+        )
+        raise UnsupportedAlgorithmError(msg) from exc
+
+
+def _strongly_protected_pkcs8(
+    key: PrivateKeyTypes, normalised: str, passphrase: bytes
+) -> bytes:
+    """Encode ``key`` as PBES2 PKCS#8 with a meaningful KDF cost."""
+    _require_real_passphrase(passphrase)
+    try:
+        der = key.private_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    except (ValueError, TypeError) as exc:  # pragma: no cover - every type has PKCS#8
+        msg = f"Cannot encode a {type(key).__name__} as {normalised}: {exc}"
+        raise UnsupportedAlgorithmError(msg) from exc
+    protected = _pkcs8.protect(der, passphrase)
+    return _pkcs8.to_pem(protected) if normalised == "pem" else protected
 
 
 def encode_public_key(key: PublicKeyTypes, *, fmt: str = "pem") -> bytes:
