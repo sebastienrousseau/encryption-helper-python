@@ -441,7 +441,17 @@ def _add_convert(sub: _SubParsers) -> None:
         action="store_true",
         help=(
             "Treat the input as a private key. The output is written "
-            "owner-only and unencrypted, so redirect it carefully."
+            "owner-only and keeps the input's protection: an encrypted key is "
+            "re-encrypted under the same passphrase."
+        ),
+    )
+    cvt.add_argument(
+        "--unencrypted",
+        action="store_true",
+        help=(
+            "With --private, write the key unencrypted even if the input was "
+            "protected. Removing protection must be deliberate, so it is never "
+            "the default."
         ),
     )
     _add_io_flags(cvt)

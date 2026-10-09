@@ -1024,3 +1024,66 @@ class TestWindowsPermissionGuard:
             raise AssertionError(msg)
 
         cli_module._warn_if_passphrase_file_is_readable(secret_file)
+
+
+class TestConvertKeepsProtection:
+    """``convert --private`` must not strip a passphrase on its own.
+
+    It wrote ``passphrase=None`` unconditionally, so converting a protected
+    key -- even with ``--passphrase-env`` supplied -- produced an unprotected
+    one, contradicting keygen's rule that an unencrypted private key is never
+    written without an explicit opt-in.
+    """
+
+    @pytest.fixture
+    def protected(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("EH_TEST_PASS", "correct horse battery staple")
+        directory = tmp_path / "keys"
+        argv = ["-q", "keygen", "--algorithm", "ed25519", "--out-dir", str(directory)]
+        assert main([*argv, "--passphrase-env", "EH_TEST_PASS"]) == EXIT_OK
+        return directory / "key.pem"
+
+    def _convert(self, source, out, *extra):
+        argv = ["-q", "convert", "--private", "--to", "pem", "--in", str(source)]
+        return main(
+            [*argv, "--out", str(out), "--passphrase-env", "EH_TEST_PASS", *extra]
+        )
+
+    def test_an_encrypted_key_stays_encrypted(self, protected, tmp_path):
+        from encryption_helper.keys.load import load_private_key
+
+        out = tmp_path / "converted.pem"
+        assert self._convert(protected, out) == EXIT_OK
+        data = out.read_bytes()
+        assert data.startswith(b"-----BEGIN ENCRYPTED PRIVATE KEY-----")
+        load_private_key(data, passphrase=b"correct horse battery staple")
+
+    def test_removing_protection_requires_unencrypted(self, protected, tmp_path):
+        out = tmp_path / "plain.pem"
+        assert self._convert(protected, out, "--unencrypted") == EXIT_OK
+        assert out.read_bytes().startswith(b"-----BEGIN PRIVATE KEY-----")
+
+    def test_an_unencrypted_key_stays_unencrypted(self, tmp_path, keypair):
+        """Nothing to preserve, and nothing weakened."""
+        private, _ = keypair
+        out = tmp_path / "same.pem"
+        argv = ["-q", "convert", "--private", "--to", "pem", "--in", str(private)]
+        assert main([*argv, "--out", str(out)]) == EXIT_OK
+        assert out.read_bytes().startswith(b"-----BEGIN PRIVATE KEY-----")
+
+    def test_a_prompted_passphrase_is_reused_for_the_output(
+        self, protected, tmp_path, monkeypatch
+    ):
+        from encryption_helper.keys.load import load_private_key
+
+        monkeypatch.setattr(
+            "encryption_helper.cli._passphrase._interactive", lambda: True
+        )
+        monkeypatch.setattr(
+            "encryption_helper.cli._passphrase.getpass.getpass",
+            lambda _prompt: "correct horse battery staple",
+        )
+        out = tmp_path / "prompted.pem"
+        argv = ["-q", "convert", "--private", "--to", "pem", "--in", str(protected)]
+        assert main([*argv, "--out", str(out)]) == EXIT_OK
+        load_private_key(out.read_bytes(), passphrase=b"correct horse battery staple")

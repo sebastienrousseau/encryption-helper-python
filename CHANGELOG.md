@@ -52,6 +52,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one level up, and an empty or `.` name produced hidden files. The stem
   must now be a single filename component; `write_key_pair()` enforces
   this for library callers too.
+- **`convert --private` keeps a key's passphrase protection.** It always
+  wrote the output unencrypted, even with `--passphrase-env` supplied. An
+  encrypted key is now re-encrypted under the same passphrase; removing
+  protection takes the new, explicit `--unencrypted` flag.
 - **Migration dates now follow security strength, as NIST's do.** Every
   classical algorithm was reported as "deprecated 2030, disallowed 2035".
   That is correct only for 112-bit keys such as RSA-2048 and P-224. It

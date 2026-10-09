@@ -61,6 +61,7 @@ from ._constants import (
 from ._output import _emit, _fail_usage, runtime_version
 from ._passphrase import (
     _load_private_key,
+    _load_private_key_and_passphrase,
     _new_key_passphrase,
 )
 from ._progress import _make_progress
@@ -406,8 +407,16 @@ def _cmd_fingerprint(args: argparse.Namespace) -> int:
 def _cmd_convert(args: argparse.Namespace) -> int:
     """Convert a key between PEM, DER and OpenSSH encodings."""
     if args.private:
-        key = _load_private_key(args, args.input)
-        data = encode_private_key(key, fmt=args.to, passphrase=None)
+        # The output keeps the input's protection: an encrypted key is
+        # re-encrypted under the same passphrase, and an unencrypted one stays
+        # as it was. This used to write passphrase=None unconditionally, so
+        # converting a protected key -- even with --passphrase-env given --
+        # quietly produced an unprotected one. Dropping protection is now an
+        # explicit choice, as it is for keygen.
+        key, passphrase = _load_private_key_and_passphrase(args, args.input)
+        if args.unencrypted:
+            passphrase = None
+        data = encode_private_key(key, fmt=args.to, passphrase=passphrase)
         mode = SECRET_FILE_MODE
     else:
         data = encode_public_key(load_public_key_file(args.input), fmt=args.to)

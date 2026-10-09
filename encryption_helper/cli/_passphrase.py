@@ -254,20 +254,38 @@ def _existing_key_passphrase(args: argparse.Namespace) -> bytes | None:
 def _load_private_key(args: argparse.Namespace, path: str) -> PrivateKeyTypes:
     """Load a private key, prompting for a passphrase only if one is needed.
 
+    Raises:
+        KeyReadError: If the key cannot be loaded.
+    """
+    return _load_private_key_and_passphrase(args, path)[0]
+
+
+def _load_private_key_and_passphrase(
+    args: argparse.Namespace, path: str
+) -> tuple[PrivateKeyTypes, bytes | None]:
+    """Load a private key and report the passphrase that unlocked it.
+
     Tries without a passphrase first, so an unencrypted key never triggers a
     pointless prompt, and prompts once if that fails and a human is present.
+    The passphrase is returned so a command that rewrites the key, such as
+    ``convert``, can keep it protected rather than silently dropping the
+    protection.
+
+    Returns:
+        ``(key, passphrase)``, where ``passphrase`` is :data:`None` if the key
+        was stored unencrypted.
 
     Raises:
         KeyReadError: If the key cannot be loaded.
     """
     supplied = _existing_key_passphrase(args)
     if supplied is not None:
-        return load_private_key_file(path, passphrase=supplied)
+        return load_private_key_file(path, passphrase=supplied), supplied
 
     try:
-        return load_private_key_file(path)
+        return load_private_key_file(path), None
     except KeyReadError:
         if not _interactive():
             raise
-    prompt = getpass.getpass(f"Passphrase for {path}: ")
-    return load_private_key_file(path, passphrase=_as_passphrase_bytes(prompt))
+    prompt = _as_passphrase_bytes(getpass.getpass(f"Passphrase for {path}: "))
+    return load_private_key_file(path, passphrase=prompt), prompt
