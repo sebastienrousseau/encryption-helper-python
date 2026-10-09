@@ -231,3 +231,80 @@ class TestStdoutDestination:
         )
         captured = capsysbinary.readouterr()
         assert result_of(captured.err.decode())["output"] == "<stdout>"
+
+
+class TestHumanModeKeepsStdoutPure:
+    """Without ``-q`` or ``--json``, ``--out -`` must still carry only data.
+
+    The human-readable report used to be printed to stdout unconditionally,
+    so ``encrypt > file.enc`` -- the README's own pipeline -- appended
+    ``Encrypted N bytes to <stdout>`` to the ciphertext and produced a file
+    that failed its integrity check. Every earlier stdout test passed ``-q``,
+    which is the one flag that hid the defect; these deliberately do not.
+    """
+
+    def test_encrypt_then_decrypt_through_stdout_round_trips(
+        self, keys, payload, tmp_path, capsysbinary
+    ):
+        capsysbinary.readouterr()
+        assert (
+            main(
+                [
+                    "encrypt",
+                    "--public-key",
+                    str(keys / "key.pub.pem"),
+                    "--in",
+                    str(payload),
+                ]
+            )
+            == EXIT_OK
+        )
+        encrypted = capsysbinary.readouterr()
+        assert encrypted.out.startswith(b"EHEV")
+        assert b"Encrypted" not in encrypted.out
+        assert b"Encrypted" in encrypted.err
+
+        container = tmp_path / "piped.enc"
+        container.write_bytes(encrypted.out)
+        assert (
+            main(
+                [
+                    "decrypt",
+                    "--private-key",
+                    str(keys / "key.pem"),
+                    "--in",
+                    str(container),
+                ]
+            )
+            == EXIT_OK
+        )
+        decrypted = capsysbinary.readouterr()
+        assert decrypted.out == payload.read_bytes()
+        assert b"Decrypted" in decrypted.err
+
+    def test_sign_writes_only_the_signature(self, keys, payload, capsysbinary):
+        capsysbinary.readouterr()
+        argv = ["sign", "--private-key", str(keys / "key.pem"), "--in", str(payload)]
+        assert main(argv) == EXIT_OK
+        captured = capsysbinary.readouterr()
+        assert len(captured.out) == 256  # RSA-2048: the signature and nothing else
+        assert b"signature" in captured.err
+
+    def test_convert_writes_only_the_key(self, keys, capsysbinary):
+        capsysbinary.readouterr()
+        argv = ["convert", "--to", "pem", "--in", str(keys / "key.pub.pem")]
+        assert main(argv) == EXIT_OK
+        captured = capsysbinary.readouterr()
+        assert captured.out.startswith(b"-----BEGIN PUBLIC KEY-----")
+        assert captured.out.rstrip().endswith(b"-----END PUBLIC KEY-----")
+
+    def test_reports_still_go_to_stdout_for_a_file_destination(
+        self, keys, payload, tmp_path, capsys
+    ):
+        """Only a data-carrying stdout moves the report; a file leaves it alone."""
+        capsys.readouterr()
+        out = tmp_path / "file.enc"
+        argv = ["encrypt", "--public-key", str(keys / "key.pub.pem")]
+        argv += ["--in", str(payload), "--out", str(out)]
+        assert main(argv) == EXIT_OK
+        assert str(out) in capsys.readouterr().out

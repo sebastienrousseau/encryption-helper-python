@@ -131,18 +131,21 @@ def _write_json(document: dict[str, Any], stream: Any) -> None:
 def _emit(args: argparse.Namespace, human: str, payload: dict[str, Any]) -> None:
     """Write a result as either human text or JSON.
 
-    JSON normally goes to stdout so it can be piped. The exception is when
-    stdout is already carrying the command's binary output (``--out -``):
-    interleaving a JSON object with ciphertext leaves neither parseable, so
-    the report moves to stderr and stdout stays pure.
+    Reports normally go to stdout so they can be piped. The exception is when
+    stdout is already carrying the command's data (``--out -``, the default
+    for every command that produces data): appending a report to ciphertext,
+    plaintext, a signature or a key corrupts it, so the report moves to
+    stderr and stdout stays pure. This applies to the human-readable line
+    exactly as it does to JSON -- ``encrypt > file.enc`` is the documented
+    pipeline, and it must produce a decryptable file without ``-q``.
     """
+    stream = sys.stderr if getattr(args, "output", None) == _STDIO else sys.stdout
     if args.json:
-        stream = sys.stderr if getattr(args, "output", None) == _STDIO else sys.stdout
         _write_json(
             envelope(getattr(args, "command", None), payload, status="ok"), stream
         )
     elif not args.quiet:
-        print(human)
+        print(human, file=stream)
 
 
 def emit_error(message: str, exit_code: int) -> None:

@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Writing to stdout no longer corrupts the output.** Without `-q` or
+  `--json`, `encrypt`, `decrypt`, `sign` and `convert` appended their
+  human-readable report (`Encrypted N bytes to <stdout>`) to the data on
+  stdout, so the documented `… | encryption-helper encrypt … > file.enc`
+  pipeline produced a file that failed its integrity check. When stdout
+  carries data the report now goes to stderr, as the JSON report already
+  did. **Files produced this way by earlier builds are recoverable**: strip
+  the trailing report line, which is plain ASCII after the last segment.
 - **Migration dates now follow security strength, as NIST's do.** Every
   classical algorithm was reported as "deprecated 2030, disallowed 2035".
   That is correct only for 112-bit keys such as RSA-2048 and P-224. It
