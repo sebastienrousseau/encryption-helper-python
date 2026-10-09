@@ -42,10 +42,15 @@ classifiers = [
     "Topic :: Utilities",
     "Typing :: Typed",
 ]
-# ML-KEM (FIPS 203) and ML-DSA (FIPS 204) require cryptography 46 or
-# newer. The upper bound keeps a major release from landing untested;
-# Renovate raises it deliberately rather than by accident.
-dependencies = ["cryptography>=46.0.0,<51.0.0"]
+# The floor is the first release whose OpenSSL wheels can use ML-KEM
+# (FIPS 203) and ML-DSA (FIPS 204). Measured, not assumed: on 46.x the
+# `mlkem` module does not exist, so `import encryption_helper` fails
+# outright; on 47.x it imports but every post-quantum call raises
+# UnsupportedAlgorithm. CI's `minimum-dependencies` job installs exactly
+# this floor, so it cannot drift from the truth again. The upper bound
+# keeps a major release from landing untested; Renovate raises it
+# deliberately rather than by accident.
+dependencies = ["cryptography>=48.0.0,<51.0.0"]
 
 [project.urls]
 Homepage = "https://github.com/hsbc/encryption-helper-python"

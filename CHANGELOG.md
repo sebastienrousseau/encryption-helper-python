@@ -86,7 +86,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   encryption, ML-DSA-44/65/87 (FIPS 204) for signing. NIST IR 8547 (initial
   public draft) disallows RSA and the elliptic curves after 2035; every
   algorithm this package previously offered was on that list. No new
-  dependency was needed -- both are in `cryptography` 46+.
+  dependency was needed -- both are in `cryptography` 48+.
 - **X25519** ephemeral-static encryption, as `age` and HPKE do, and **Ed448**
   signing.
 - Three new container mechanisms alongside RSA-OAEP: `kem_id` 2 (ML-KEM-768),
@@ -130,9 +130,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   programming mistake. A key that could decrypt but does not match the
   container raises `DecryptionError`, because that is indistinguishable from a
   tampered header.
-- `cryptography` is pinned to `>=46.0.0,<51.0.0`. The previous unbounded
+- `cryptography` is pinned to `>=48.0.0,<51.0.0`. The previous unbounded
   `>=43.0.0` spanned two years of releases, including ones with known CVEs,
-  and predated ML-KEM.
+  and predated ML-KEM. 48 is the first release whose OpenSSL wheels provide
+  ML-KEM and ML-DSA: an earlier draft of this release declared 46, on which
+  the package failed to import, and CI now tests the declared floor exactly.
 - Post-quantum key sizes are reported as "Parameter set", not "Key size":
   calling ML-KEM-768 "768 bits" would simply be wrong.
 

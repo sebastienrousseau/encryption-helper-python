@@ -92,6 +92,37 @@ jobs:
       - name: Test
         run: pytest --cov --cov-report=term-missing --cov-report=xml
 
+  # Every other job resolves the newest cryptography the bounds allow, so a
+  # floor that is too low is invisible to them. One was: the floor read 46
+  # while the package could not even be imported below 48. This job installs
+  # exactly the declared floor, read from pyproject.toml rather than repeated
+  # here, so raising the floor raises what is tested.
+  minimum-dependencies:
+    name: Test against the declared minimum cryptography
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.10"
+          cache: pip
+      - name: Install the floor
+        run: |
+          python -m pip install --upgrade pip tomli
+          floor=$(python - <<'PY'
+          import re, tomli
+          deps = tomli.load(open("pyproject.toml", "rb"))["project"]["dependencies"]
+          (spec,) = [d for d in deps if d.startswith("cryptography")]
+          print(re.search(r">=\s*([0-9][^,\s]*)", spec).group(1))
+          PY
+          )
+          echo "Declared floor: cryptography==${floor}"
+          python -m pip install -e . pytest pytest-cov hypothesis "cryptography==${floor}"
+          python -c "import cryptography as c, sys; sys.exit(c.__version__ != '${floor}')"
+      - name: Test
+        run: pytest -q --no-cov
+
   fuzz:
     name: Fuzz
     runs-on: ubuntu-latest
@@ -323,7 +354,7 @@ jobs:
   ci-ok:
     name: CI passed
     if: always()
-    needs: [lint, types, test, mutation, mcp, fuzz, examples, security, build, sandbox]
+    needs: [lint, types, test, minimum-dependencies, mutation, mcp, fuzz, examples, security, build, sandbox]
     runs-on: ubuntu-latest
     steps:
       - name: Fail if any dependency failed

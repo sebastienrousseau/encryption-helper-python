@@ -8,7 +8,7 @@ those hours working out what to look at.
 
 **Reviewing:** `encryption-helper` v0.0.2
 **Primitives:** all from [`cryptography`](https://github.com/pyca/cryptography)
-46+ (OpenSSL / Rust). **No primitive is implemented here.**
+48+ (OpenSSL / Rust). **No primitive is implemented here.**
 **What is implemented here:** key encapsulation selection, a KDF binding, a
 container format, and segment framing.
 
