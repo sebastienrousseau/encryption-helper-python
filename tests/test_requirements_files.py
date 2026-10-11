@@ -50,7 +50,9 @@ def test_runtime_covers_every_declared_dependency():
     assert declared <= set(_pins("runtime.txt")), REGENERATE
 
 
-@pytest.mark.parametrize("name", ["runtime.txt", "build-backend.txt", "release.txt"])
+@pytest.mark.parametrize(
+    "name", ["runtime.txt", "build-backend.txt", "release.txt", "audit.txt"]
+)
 def test_every_pin_carries_a_hash(name):
     """`pip --require-hashes` refuses a file with an unhashed pin; fail here first."""
     text = (REQUIREMENTS / name).read_text(encoding="utf-8")
@@ -68,3 +70,51 @@ def test_build_backend_satisfies_the_build_system():
     (requirement,) = project["build-system"]["requires"]
     assert requirement.startswith("poetry-core")
     assert "poetry-core" in _pins("build-backend.txt")
+
+
+_COMPILED_FROM_IN = ["build-backend", "release", "audit"]
+
+
+def _top_level(stem: str) -> set[str]:
+    """Package names an ``.in`` file asks for, extras and bounds removed."""
+    text = (REQUIREMENTS / f"{stem}.in").read_text(encoding="utf-8")
+    lines = (line.strip() for line in text.splitlines())
+    return {
+        re.split(r"[\[<>=!~ ;]", line, maxsplit=1)[0].lower()
+        for line in lines
+        if line and not line.startswith("#")
+    }
+
+
+@pytest.mark.parametrize("stem", _COMPILED_FROM_IN)
+def test_every_in_file_names_what_its_lock_pins(stem):
+    """An ``.in`` file once held only its comment header.
+
+    The committed ``.txt`` still had every pin, so nothing failed -- until
+    the next regeneration, which would have produced an empty lock and a
+    release job that installs nothing.
+    """
+    wanted = _top_level(stem)
+    assert wanted, f"requirements/{stem}.in names no packages. {REGENERATE}"
+    missing = wanted - set(_pins(f"{stem}.txt"))
+    assert not missing, f"{stem}.txt does not pin {sorted(missing)}. {REGENERATE}"
+
+
+@pytest.mark.parametrize(
+    "name", ["runtime.txt", "build-backend.txt", "release.txt", "audit.txt"]
+)
+def test_lock_files_carry_no_machine_specific_paths(name):
+    """pip-compile copies its arguments into comments; keep them relative."""
+    text = (REQUIREMENTS / name).read_text(encoding="utf-8")
+    assert not re.search(r"(?m)(^|\s)(/|[A-Za-z]:\\)\S*requirements", text)
+    # A pip-compile constraint passed as a random temporary file.
+    assert not re.search(r"-c \S*tmp\w+\.txt", text)
+
+
+def test_ci_audits_the_pinned_sets_with_pinned_scanners():
+    """A bare ``pip-audit`` audits the job's own environment, not the project."""
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "pip install --require-hashes -r requirements/audit.txt" in ci
+    assert '-r "requirements/${set}.txt"' in ci
+    assert "for set in runtime build-backend release audit" in ci
+    assert not re.search(r"pip install[^\n]*\bpip-audit\b", ci)

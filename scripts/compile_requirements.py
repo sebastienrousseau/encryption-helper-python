@@ -14,6 +14,13 @@ Three files, each installed with ``pip --require-hashes``:
     ``--no-build-isolation`` instead of fetching the backend unpinned.
 ``release.txt``
     build, twine and cyclonedx-bom for the release and CI build jobs.
+``audit.txt``
+    bandit and pip-audit for the CI security job.
+
+Paths are passed relative to the repository root, and the poetry.lock
+constraints are written to a fixed name rather than a random temporary file,
+because pip-compile copies both into the generated ``# via`` comments. A
+machine-specific path there makes every regeneration a spurious diff.
 
 Run with pip-tools installed, under Python 3.14 (the release jobs' version)::
 
@@ -26,7 +33,6 @@ from __future__ import annotations
 
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import tomllib
@@ -60,21 +66,30 @@ def compile_file(*args: str) -> None:
 
 
 def main() -> None:
-    """Compile all three files."""
-    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as handle:
-        handle.writelines(f"{n}=={v}\n" for n, v in sorted(locked_versions().items()))
-        constraints = handle.name
+    """Compile every requirements file."""
+    constraints = REQUIREMENTS / ".poetry-lock-constraints.txt"
+    constraints.write_text(
+        "".join(f"{n}=={v}\n" for n, v in sorted(locked_versions().items())),
+        encoding="utf-8",
+    )
     try:
         output = REQUIREMENTS / "runtime.txt"
         compile_file(
-            "--no-header", "-c", constraints, "-o", str(output), "pyproject.toml"
+            "--no-header",
+            "-c",
+            constraints.relative_to(ROOT).as_posix(),
+            "-o",
+            output.relative_to(ROOT).as_posix(),
+            "pyproject.toml",
         )
         output.write_text(RUNTIME_HEADER + output.read_text(encoding="utf-8"))
     finally:
-        Path(constraints).unlink()
-    for name in ("build-backend", "release"):
+        constraints.unlink()
+    for name in ("build-backend", "release", "audit"):
         compile_file(
-            "-o", str(REQUIREMENTS / f"{name}.txt"), str(REQUIREMENTS / f"{name}.in")
+            "-o",
+            f"requirements/{name}.txt",
+            f"requirements/{name}.in",
         )
 
 

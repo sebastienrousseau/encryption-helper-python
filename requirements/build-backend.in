@@ -3,3 +3,5 @@
 # poetry-core unpinned. Must satisfy [build-system] in pyproject.toml.
 #
 # Regenerate with: python scripts/compile_requirements.py
+
+poetry-core>=2.0.0

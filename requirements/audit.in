@@ -1,0 +1,8 @@
+# Security scanners the CI `security` job runs, compiled with hashes into
+# audit.txt. A scanner installed unpinned can be swapped by an upstream
+# release, and it is the one tool whose verdict decides whether a
+# vulnerable dependency ships.
+#
+# Regenerate with: python scripts/compile_requirements.py
+bandit[toml]
+pip-audit

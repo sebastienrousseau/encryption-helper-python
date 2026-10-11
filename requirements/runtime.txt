@@ -105,7 +105,7 @@ cffi==2.1.1 \
     --hash=sha256:fb92203a88b3d3053034db775110081c49d28be6551923805e039924093761e4 \
     --hash=sha256:fcd22650c908d7b7da162bbfaab594a1227a15d1643a98c68b122ac642fa2264
     # via
-    #   -c /workspace/.tmp/audit/tmpzofauws3.txt
+    #   -c requirements/.poetry-lock-constraints.txt
     #   cryptography
 cryptography==50.0.2 \
     --hash=sha256:0ddc924c04591c2811ca024d62ecad4f7f6f08af8939c211438f48a16bd23602 \
@@ -168,11 +168,11 @@ cryptography==50.0.2 \
     --hash=sha256:fa8f5efb344d6908a1ce62f4a24e2e5780f825d6f53f5f50ec5ffacac72936cb \
     --hash=sha256:fdd28f912fccfec1846a94e2e1e8f9b0012f557f0c46fe4f3eb0d7a87afcf90b
     # via
-    #   -c /workspace/.tmp/audit/tmpzofauws3.txt
+    #   -c requirements/.poetry-lock-constraints.txt
     #   encryption-helper (pyproject.toml)
 pycparser==2.22 \
     --hash=sha256:491c8be9c040f5390f5bf44a5b07752bd07f56edf992381b05c701439eec10f6 \
     --hash=sha256:c3702b6d3dd8c7abc1afa565d7e63d53a1d0bd86cdc24edd75470f4de499cfcc
     # via
-    #   -c /workspace/.tmp/audit/tmpzofauws3.txt
+    #   -c requirements/.poetry-lock-constraints.txt
     #   cffi

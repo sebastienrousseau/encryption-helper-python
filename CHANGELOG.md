@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The dependency audit now audits the dependencies.** CI ran a bare
+  `pip-audit`, which scans the job's own environment -- the scanners -- and
+  never saw `cryptography`, so a published advisory against the pinned
+  version could not fail the build. It now audits each hash-locked
+  requirements file, runs weekly as well as on push, and installs bandit and
+  pip-audit from the new hash-locked `requirements/audit.txt` instead of
+  unpinned.
+- **`requirements/release.in` and `build-backend.in` named no packages.** The
+  committed locks still held every pin, so nothing failed, but the next
+  `scripts/compile_requirements.py` run would have written empty locks. The
+  script also copied absolute and temporary paths into the generated
+  comments; paths are now relative and stable.
 - **The streaming reader rejects a content key of the wrong length.** RSA-OAEP
   returns whatever the sender wrapped, and `decrypt_stream` passed it straight
   to AES-GCM: a container carrying a 128-bit key decrypted successfully, and a

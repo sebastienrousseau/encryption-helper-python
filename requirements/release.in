@@ -3,3 +3,7 @@
 # unpinned upstream release could alter the artifact before it is attested.
 #
 # Regenerate with: python scripts/compile_requirements.py
+
+build
+cyclonedx-bom
+twine
