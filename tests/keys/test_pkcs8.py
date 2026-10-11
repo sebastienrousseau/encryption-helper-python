@@ -39,6 +39,18 @@ def _key(algorithm):
     )
 
 
+def _openssl_version():
+    """``openssl version`` for the binary test_openssl_reads_it runs."""
+    result = subprocess.run(
+        ["openssl", "version"],
+        env={"PATH": "/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout
+
+
 def _weak_pem(key):
     """A key as cryptography's default writes it: 2,048 iterations."""
     return key.private_bytes(
@@ -93,6 +105,10 @@ class TestNewKeysAreStronglyProtected:
     @pytest.mark.parametrize("algorithm", ["rsa", "ecdsa", "ed25519"])
     def test_openssl_reads_it(self, algorithm, tmp_path):
         """The reason for PBKDF2 over scrypt: the counterparty's tools."""
+        if algorithm == "ed25519" and "LibreSSL" in _openssl_version():
+            # macOS ships LibreSSL 3.3 as /usr/bin/openssl, which cannot
+            # parse Ed25519 keys at all, encrypted or not.
+            pytest.skip("system openssl is LibreSSL, which lacks Ed25519")
         path = tmp_path / "key.pem"
         path.write_bytes(encode_private_key(_key(algorithm), passphrase=PASSPHRASE))
         result = subprocess.run(  # noqa: S603
