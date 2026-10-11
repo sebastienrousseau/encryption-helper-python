@@ -88,7 +88,13 @@ To run the server without installing Python, use the container sandbox:
 
 Classification is by file contents, not by filename. Symbolic links are not
 followed, only regular files are read, and at most 64 KiB is read from any one
-file.
+file. At most `limit` findings are returned (default 200, at most 2,000);
+`summary` always covers all of them, and `truncated` says whether any were
+left out.
+
+`inspect_container` and `fingerprint_public_key` likewise refuse anything that
+is not a regular file -- a FIFO would otherwise stall the single-threaded
+server -- and `fingerprint_public_key` reads at most 1 MiB.
 
 An encrypted private key is reported as needing manual review rather than
 being unlocked, because its algorithm is inside the encrypted structure and no

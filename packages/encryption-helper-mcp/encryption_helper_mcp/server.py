@@ -49,9 +49,9 @@ METHOD_NOT_FOUND: Final = -32601
 INVALID_PARAMS: Final = -32602
 INTERNAL_ERROR: Final = -32603
 
-#: Largest single message accepted. A malformed or hostile client could
-#: otherwise stream an unbounded line and exhaust memory before any parse is
-#: attempted.
+#: Largest single message accepted, in UTF-8 bytes. A malformed or hostile
+#: client could otherwise stream an unbounded line and exhaust memory before
+#: any parse is attempted, so the cap is applied while reading, not after.
 MAX_MESSAGE_BYTES: Final = 4 * 1024 * 1024
 
 
@@ -103,7 +103,9 @@ def _handle_initialize(_root: Path, _params: dict[str, Any]) -> dict[str, Any]:
             "Read-only tools for assessing cryptographic material against the "
             "NIST IR 8547 post-quantum migration timetable. This server "
             "cannot generate, encrypt, decrypt, sign, or write anything, and "
-            "it never accepts a passphrase or reads a private key. Where an "
+            "it never accepts a passphrase or returns private key material: "
+            "a scan identifies an unencrypted private key's algorithm and "
+            "reports only that. Where an "
             "operation is needed rather than an answer, use the "
             "encryption-helper command-line tool directly so that key "
             "material stays on the operator's machine."
@@ -209,6 +211,35 @@ def dispatch(root: Path, message: object) -> dict[str, Any] | None:
         return _error(request_id, INTERNAL_ERROR, "Internal error.")
 
 
+#: Stands in for a message that exceeded the limit and was discarded.
+_OVERSIZED: Final = "\x00oversized"
+
+
+def _read_message(source: IO[str]) -> str | None:
+    """Read one line, never holding more than the limit in memory.
+
+    ``for line in source`` would buffer an arbitrarily long line in full
+    before its length could be checked. Reading with a size bound instead
+    means an oversized line is detected after at most one limit's worth, and
+    the remainder is consumed in bounded pieces and dropped.
+
+    Returns:
+        The line; :data:`_OVERSIZED` if it exceeded the limit; :data:`None`
+        at end of input.
+    """
+    line = source.readline(MAX_MESSAGE_BYTES + 1)
+    if not line:
+        return None
+    if len(line) > MAX_MESSAGE_BYTES:
+        while line and not line.endswith("\n"):
+            line = source.readline(MAX_MESSAGE_BYTES + 1)
+        return _OVERSIZED
+    # A character can be up to four UTF-8 bytes; the limit is in bytes.
+    if len(line.encode("utf-8", "surrogatepass")) > MAX_MESSAGE_BYTES:
+        return _OVERSIZED
+    return line
+
+
 def serve(
     root: Path, source: IO[str] | None = None, sink: IO[str] | None = None
 ) -> int:
@@ -225,9 +256,12 @@ def serve(
     source = source if source is not None else sys.stdin
     sink = sink if sink is not None else sys.stdout
 
-    for line in source:
+    while True:
+        line = _read_message(source)
+        if line is None:
+            break
         response: dict[str, Any] | None
-        if len(line) > MAX_MESSAGE_BYTES:
+        if line is _OVERSIZED:
             response = _error(None, INVALID_REQUEST, "Message too large.")
         elif not line.strip():
             continue
@@ -253,8 +287,8 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         epilog=(
             "This server answers questions. It cannot generate, encrypt, "
-            "decrypt or sign, and it never reads a private key or accepts a "
-            "passphrase. Use the encryption-helper command directly for "
+            "decrypt or sign, and it never returns private key material or "
+            "accepts a passphrase. Use the encryption-helper command directly for "
             "operations on key material."
         ),
     )

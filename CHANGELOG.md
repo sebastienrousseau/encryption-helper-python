@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The MCP server can no longer be stalled or flooded by one request.** It
+  is single-threaded, so a stuck call ends the session. `inspect_container`
+  and `fingerprint_public_key` on a FIFO inside the root blocked forever;
+  they now open without blocking or following a link swapped in after the
+  path was confined, and refuse anything but a regular file.
+  `fingerprint_public_key` reads at most 1 MiB. `scan_directory` returns at
+  most `limit` findings (default 200, at most 2,000) with a `truncated`
+  flag; the summary still covers every finding. The 4 MiB message cap was
+  checked only after the whole line was buffered, and in characters; it is
+  now enforced while reading, in bytes, and the session continues after an
+  oversized message. The server's description no longer claims it never
+  reads a private key: a scan does, to report the algorithm, and returns
+  nothing else.
 - **Every read of caller-named input is bounded by the bytes read.** The CLI
   checked `stat().st_size` and then read the whole file, but a FIFO, a
   device or `<(cmd)` reports a size of 0: `--in <(cmd)` and

@@ -19,10 +19,17 @@ Two properties are enforced rather than documented:
   be inside the configured root. Resolution happens before the check, so a
   symbolic link inside the root that points outside it is rejected rather
   than followed.
+* **Bounded work.** The server is single-threaded, so one stuck call ends
+  the session. A file is opened without blocking and without following a
+  link swapped in after resolution, refused unless it is a regular file, and
+  read only up to a limit; a scan returns at most a bounded number of
+  findings, with the summary still covering all of them.
 """
 
 from __future__ import annotations
 
+import os
+import stat
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,10 +38,22 @@ from typing import Any, Final
 from encryption_helper.crypto.metadata import HEADER_SIZE, describe_container
 from encryption_helper.errors import EncryptionHelperError
 from encryption_helper.inventory import scan, summarise
-from encryption_helper.keys import fingerprint_sha256, load_public_key_file
+from encryption_helper.keys import fingerprint_sha256, load_public_key
+from encryption_helper.keys.load import MAX_KEY_FILE_BYTES
 from encryption_helper.policy import assess, horizon, inventory
 
 __all__ = ["TOOLS", "Tool", "ToolError", "call", "descriptors"]
+
+#: Findings returned by one scan when the caller names no limit, and the most
+#: it may ask for. Each finding is a few hundred bytes of a model's context.
+DEFAULT_SCAN_LIMIT: Final = 200
+MAX_SCAN_LIMIT: Final = 2000
+
+#: Added to the flags ``open()`` derives from its mode. Non-blocking, so a
+#: FIFO cannot stall the open; no-follow, so a link swapped in after the path
+#: was resolved and confined is refused. Both are absent on Windows, which has
+#: no FIFOs in the filesystem namespace.
+_SAFE_OPEN_FLAGS: Final = getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
 
 
 class ToolError(Exception):
@@ -100,6 +119,38 @@ def _resolve_within(root: Path, candidate: str) -> Path:
     return target
 
 
+def _safe_opener(path: str, flags: int) -> int:
+    return os.open(path, flags | _SAFE_OPEN_FLAGS)
+
+
+def _read_regular_file(path: Path, limit: int, *, prefix: bool = False) -> bytes:
+    """Read at most ``limit`` bytes of a regular file, refusing anything else.
+
+    Args:
+        path: A path already confined by :func:`_resolve_within`.
+        limit: Most bytes to return.
+        prefix: Return the first ``limit`` bytes of a larger file instead of
+            refusing it.
+
+    Raises:
+        ToolError: If the file cannot be opened, is a FIFO, device or other
+            non-regular file, or holds more than ``limit`` bytes.
+    """
+    try:
+        with open(path, "rb", opener=_safe_opener) as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                msg = f"{path} is not a regular file."
+                raise ToolError(msg)
+            data = handle.read(limit if prefix else limit + 1)
+    except OSError as exc:
+        msg = f"{path}: {exc.strerror or 'cannot be read'}."
+        raise ToolError(msg) from exc
+    if len(data) > limit:
+        msg = f"{path} is larger than the {limit}-byte limit for this tool."
+        raise ToolError(msg)
+    return data
+
+
 def _pq_horizon(_root: Path, _arguments: dict[str, Any]) -> dict[str, Any]:
     """Return the migration timetable and the publications behind it."""
     return horizon()
@@ -134,12 +185,8 @@ def _algorithm_inventory(_root: Path, _arguments: dict[str, Any]) -> dict[str, A
 def _inspect_container(root: Path, arguments: dict[str, Any]) -> dict[str, Any]:
     """Describe an encrypted file from its header."""
     path = _resolve_within(root, str(arguments.get("path", "")))
-    try:
-        with path.open("rb") as handle:
-            header = handle.read(HEADER_SIZE)
-    except OSError as exc:
-        msg = f"{path}: {exc.strerror or 'cannot be read'}."
-        raise ToolError(msg) from exc
+    # Only the header is wanted, so a container of any size is acceptable.
+    header = _read_regular_file(path, HEADER_SIZE, prefix=True)
     try:
         info = describe_container(header)
     except EncryptionHelperError as exc:
@@ -150,11 +197,20 @@ def _inspect_container(root: Path, arguments: dict[str, Any]) -> dict[str, Any]:
 def _scan_directory(root: Path, arguments: dict[str, Any]) -> dict[str, Any]:
     """Inventory cryptographic material under a path."""
     path = _resolve_within(root, str(arguments.get("path", ".")))
+    limit = arguments.get("limit", DEFAULT_SCAN_LIMIT)
+    if (
+        not isinstance(limit, int)
+        or isinstance(limit, bool)
+        or not 1 <= limit <= MAX_SCAN_LIMIT
+    ):
+        msg = f"argument 'limit' must be an integer from 1 to {MAX_SCAN_LIMIT}."
+        raise ToolError(msg)
     findings = scan([path])
     return {
         "root": str(path),
         "summary": summarise(findings),
-        "findings": [finding.as_dict() for finding in findings],
+        "findings": [finding.as_dict() for finding in findings[:limit]],
+        "truncated": len(findings) > limit,
         "horizon": horizon(),
     }
 
@@ -163,7 +219,7 @@ def _fingerprint_public_key(root: Path, arguments: dict[str, Any]) -> dict[str, 
     """Return the fingerprint of a public key file."""
     path = _resolve_within(root, str(arguments.get("path", "")))
     try:
-        key = load_public_key_file(path)
+        key = load_public_key(_read_regular_file(path, MAX_KEY_FILE_BYTES))
     except EncryptionHelperError as exc:
         raise ToolError(str(exc)) from exc
     return {"path": str(path), "fingerprint": fingerprint_sha256(key)}
@@ -273,7 +329,18 @@ TOOLS: Final = (
                         "Directory or file to examine, relative to the "
                         "server's root. Defaults to the root itself."
                     ),
-                }
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_SCAN_LIMIT,
+                    "description": (
+                        "Most findings to return (default "
+                        f"{DEFAULT_SCAN_LIMIT}). The summary always covers "
+                        "every finding; 'truncated' says whether any were "
+                        "left out."
+                    ),
+                },
             },
             "additionalProperties": False,
         },
