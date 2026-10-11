@@ -140,19 +140,45 @@ class _Displaced(NamedTuple):
     target: Path
     mode: int
 
-    def restore(self) -> None:
+    def restore(self, *, replace: bool = True) -> bool:
         """Put the file back where it came from, mode and all.
 
         Called when a write fails after its predecessor was displaced. Failure
         is swallowed: a failed rollback must not mask the error that triggered
         it.
+
+        Args:
+            replace: Whether whatever is now at the target is this process's
+                own failed write, and so may be replaced. When the target was
+                taken by *another* process, pass False: its file is not ours
+                to destroy, and the original stays at :attr:`backup`.
+
+        Returns:
+            True if the original is back at its path, False if it remains
+            only at :attr:`backup`.
         """
         try:
-            self.backup.replace(self.target)
-            if not _WINDOWS:
+            if replace:
+                self.backup.replace(self.target)
+            else:
+                _commit_without_clobbering(self.backup, self.target)
+        except (KeyExistsError, OSError):
+            return False
+        if not _WINDOWS:
+            with contextlib.suppress(OSError):
                 self.target.chmod(self.mode)
-        except OSError:  # pragma: no cover - best effort during failure handling
-            pass
+        return True
+
+    def raced(self, exc: KeyExistsError) -> KeyExistsError:
+        """Explain a commit race, naming where the previous file now lives."""
+        if self.restore(replace=False):
+            return exc
+        msg = (
+            f"{self.target} was created by another process while this write "
+            f"was in progress. It was not overwritten; the file that was there "
+            f"before is preserved at {self.backup}."
+        )
+        return KeyExistsError(msg)
 
 
 def _displace(path: Path) -> _Displaced:
@@ -271,6 +297,12 @@ def secure_write_bytes(
         if displaced is not None:
             displaced.restore()
         raise
+    except KeyExistsError as exc:
+        # Another process took the name during the write. Its file is not
+        # ours to replace, so the old contents may have to stay at the backup.
+        if displaced is not None:
+            raise displaced.raced(exc) from exc
+        raise
 
     return _outcome(target, displaced, replaced=replaced)
 
@@ -343,6 +375,13 @@ def _write_atomically(target: Path, data: bytes, *, mode: int, dir_mode: int) ->
             os.fsync(handle.fileno())
         _commit_without_clobbering(tmp_path, target)
         _fsync_directory(parent)
+    except KeyExistsError:
+        # Lost a race for the name. The temporary file holds the complete new
+        # content -- for a private key, a second copy of the secret -- so it
+        # must not outlive the failed commit.
+        with contextlib.suppress(OSError):
+            tmp_path.unlink()
+        raise
     except OSError as exc:
         with contextlib.suppress(OSError):
             tmp_path.unlink()
@@ -482,6 +521,8 @@ def secure_write_stream(
         with contextlib.suppress(OSError):
             tmp_path.unlink()
         if displaced is not None:
+            if isinstance(exc, KeyExistsError):
+                raise displaced.raced(exc) from exc
             displaced.restore()
         if isinstance(exc, OSError):
             msg = f"Could not write to {target}: {exc.strerror}"

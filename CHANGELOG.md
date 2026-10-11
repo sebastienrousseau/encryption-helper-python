@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Losing a write race no longer orphans the new private key.** When another
+  process created the destination between the backup and the commit,
+  `secure_write_bytes` raised `KeyExistsError` -- which its cleanup handlers,
+  catching `OSError` and `KeyWriteError`, never saw. The temporary file with
+  the complete new key stayed in the directory, and the original stayed at
+  its `.bak-` name with nothing saying so. The temporary file is now removed,
+  the other process's file is never replaced (the streaming writer used to
+  replace it during rollback), and the error names where the original is.
 - **The dependency audit now audits the dependencies.** CI ran a bare
   `pip-audit`, which scans the job's own environment -- the scanners -- and
   never saw `cryptography`, so a published advisory against the pinned

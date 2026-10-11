@@ -74,6 +74,22 @@ class Mutation:
 MUTATIONS: tuple[Mutation, ...] = (
     # --- filesystem guarantees -------------------------------------------
     Mutation(
+        id="io-race-cleanup",
+        property="a commit lost to a race leaves no copy of the new key behind",
+        path="encryption_helper/_io.py",
+        old="    except KeyExistsError:\n        # Lost a race for the name.",
+        new="    except ZeroDivisionError:\n        # Lost a race for the name.",
+        tests=("tests/test_io.py",),
+    ),
+    Mutation(
+        id="io-race-restore",
+        property="a rollback never replaces a file another process created",
+        path="encryption_helper/_io.py",
+        old="        if self.restore(replace=False):",
+        new="        if self.restore(replace=True):",
+        tests=("tests/test_io.py",),
+    ),
+    Mutation(
         id="io-mode",
         property="private keys are written owner-only, not at the umask default",
         path="encryption_helper/_io.py",
@@ -114,13 +130,10 @@ MUTATIONS: tuple[Mutation, ...] = (
         property="a streamed write whose commit fails restores the backup",
         path="encryption_helper/_io.py",
         old=(
-            "            tmp_path.unlink()\n        if displaced is not None:\n"
+            "                raise displaced.raced(exc) from exc\n"
             "            displaced.restore()"
         ),
-        new=(
-            "            tmp_path.unlink()\n        if displaced is not None:\n"
-            "            pass"
-        ),
+        new=("                raise displaced.raced(exc) from exc\n            pass"),
         tests=("tests/test_secure_write_stream.py",),
     ),
     Mutation(

@@ -296,3 +296,67 @@ class TestRestoreOnEveryFailurePath:
         monkeypatch.undo()
         assert target.read_bytes() == b"original"
         assert not list(tmp_path.glob("*.tmp")), "a temporary file was orphaned"
+
+
+class TestCommitRaceAfterDisplacement:
+    """Another process takes the name between the backup and the commit.
+
+    Both writers used to get this wrong for ``secure_write_bytes``: the race
+    raised ``KeyExistsError``, which is neither ``OSError`` nor
+    ``KeyWriteError``, so the cleanup handlers never ran. The temporary file
+    -- for a private key, a second copy of the secret -- was left behind, and
+    the original was left at its ``.bak-`` name without a word.
+    """
+
+    @pytest.fixture(params=["hard-link", "rename-fallback"])
+    def racer(self, request, monkeypatch):
+        from encryption_helper import _io as io_module
+
+        if request.param == "rename-fallback":
+
+            def refuse(*_args, **_kwargs):
+                raise OSError(1, "Operation not permitted")
+
+            monkeypatch.setattr(io_module.os, "link", refuse)
+
+        real = io_module._displace
+
+        def displace_then_lose_the_race(path):
+            displaced = real(path)
+            path.write_bytes(b"theirs")
+            return displaced
+
+        monkeypatch.setattr(io_module, "_displace", displace_then_lose_the_race)
+
+    @staticmethod
+    def _write_bytes(target):
+        secure_write_bytes(target, b"NEW SECRET", overwrite=True)
+
+    @staticmethod
+    def _write_stream(target):
+        from encryption_helper._io import secure_write_stream
+
+        with secure_write_stream(target, overwrite=True) as (handle, _):
+            handle.write(b"NEW SECRET")
+
+    @pytest.mark.parametrize("write", ["_write_bytes", "_write_stream"])
+    def test_no_copy_of_the_new_content_is_left_behind(self, tmp_path, racer, write):
+        target = tmp_path / "id.key.pem"
+        target.write_bytes(b"OLD")
+        with pytest.raises(KeyExistsError):
+            getattr(self, write)(target)
+        leftovers = [p for p in tmp_path.iterdir() if p.read_bytes() == b"NEW SECRET"]
+        assert leftovers == []
+
+    @pytest.mark.parametrize("write", ["_write_bytes", "_write_stream"])
+    def test_the_racing_file_is_kept_and_the_original_is_named(
+        self, tmp_path, racer, write
+    ):
+        target = tmp_path / "id.key.pem"
+        target.write_bytes(b"OLD")
+        with pytest.raises(KeyExistsError, match=r"preserved at .*\.bak-") as info:
+            getattr(self, write)(target)
+        assert target.read_bytes() == b"theirs"
+        (backup,) = tmp_path.glob("id.key.pem.bak-*")
+        assert backup.read_bytes() == b"OLD"
+        assert str(backup) in str(info.value)
