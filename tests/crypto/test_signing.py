@@ -244,3 +244,57 @@ class TestHashMatchesKeyStrength:
 
         key = generate_ecdsa(curve=curve)
         verify(key.public_key(), sign(key, b"m"), b"m")
+
+
+@pytest.fixture(scope="module")
+def rsa_1024():
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    return rsa.generate_private_key(65537, 1024)  # noqa: S505 - weak on purpose
+
+
+class TestSigningStrengthFloor:
+    """New signatures need 112-bit strength; old ones can still be checked.
+
+    Encryption already refused RSA below 2048 bits, but signing accepted any
+    size, and ECDSA on a curve outside the NIST set fell back to SHA-256.
+    """
+
+    def test_signing_with_rsa_below_2048_is_refused(self, rsa_1024):
+        from encryption_helper.errors import InvalidArgumentError
+
+        with pytest.raises(InvalidArgumentError, match="1024-bit RSA"):
+            sign(rsa_1024, b"m")
+
+    def test_an_existing_rsa_1024_signature_still_verifies(self, rsa_1024):
+        """SP 800-131A allows verification as legacy use."""
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import padding
+
+        legacy = rsa_1024.sign(
+            b"m",
+            padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=32),
+            hashes.SHA256(),
+        )
+        verify(rsa_1024.public_key(), legacy, b"m")
+
+    @pytest.mark.parametrize("curve", ["SECP256K1", "BrainpoolP512R1", "SECP192R1"])
+    def test_ecdsa_off_the_supported_curves_is_refused(self, curve):
+        from cryptography.hazmat.primitives.asymmetric import ec
+
+        try:
+            key = ec.generate_private_key(getattr(ec, curve)())
+        except Exception:  # noqa: BLE001 - backend without this curve
+            pytest.skip(f"{curve} unavailable in this OpenSSL")
+        with pytest.raises(UnsupportedAlgorithmError, match="P-256, P-384 and P-521"):
+            sign(key, b"m")
+
+    def test_rsa_2048_and_the_nist_curves_still_sign(self):
+        from encryption_helper import generate
+
+        for key in (
+            generate("rsa", key_size=2048),
+            generate("ecdsa", curve="p256"),
+            generate("ecdsa", curve="p521"),
+        ):
+            verify(key.public_key(), sign(key, b"m"), b"m")

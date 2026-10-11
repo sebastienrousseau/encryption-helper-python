@@ -32,7 +32,11 @@ from cryptography.hazmat.primitives.asymmetric.types import (
 )
 
 from .._labels import key_label
-from ..errors import SignatureVerificationError, UnsupportedAlgorithmError
+from ..errors import (
+    InvalidArgumentError,
+    SignatureVerificationError,
+    UnsupportedAlgorithmError,
+)
 
 __all__ = ["is_valid_signature", "sign", "verify"]
 
@@ -55,6 +59,47 @@ _RSA_SHA384_FROM: Final = 3072
 
 #: ECDSA hash by curve size, matched so the hash is never the weak link.
 _ECDSA_HASH_BITS: Final = {384: hashes.SHA384, 521: hashes.SHA512}
+
+#: Smallest RSA modulus a *new* signature may be made with: 112-bit strength,
+#: the NIST SP 800-131A floor. Encryption already refused smaller keys.
+#: Verification still accepts them, which SP 800-131A allows as legacy use,
+#: so signatures made before this check can still be checked.
+MIN_RSA_SIGNING_BITS: Final = 2048
+
+#: Curves a new ECDSA signature may be made on: the NIST curves this package
+#: generates, each with a defined hash pairing above. On any other curve the
+#: hash fell back to SHA-256 -- a 512-bit Brainpool key signed at 128-bit
+#: collision strength -- and small curves such as P-192 are below the floor.
+_ECDSA_SIGNING_CURVES: Final = (ec.SECP256R1, ec.SECP384R1, ec.SECP521R1)
+
+
+def _require_signing_strength(private_key: PrivateKeyTypes) -> None:
+    """Refuse to make a new signature with a key that is too weak for it.
+
+    Raises:
+        InvalidArgumentError: If an RSA key is below
+            :data:`MIN_RSA_SIGNING_BITS`.
+        UnsupportedAlgorithmError: If an ECDSA key is not on a supported curve.
+    """
+    if (
+        isinstance(private_key, rsa.RSAPrivateKey)
+        and private_key.key_size < MIN_RSA_SIGNING_BITS
+    ):
+        msg = (
+            f"Refusing to sign with a {private_key.key_size}-bit RSA key. NIST "
+            f"SP 800-131A disallows RSA below {MIN_RSA_SIGNING_BITS} bits for "
+            "new signatures. Existing signatures can still be verified."
+        )
+        raise InvalidArgumentError(msg)
+    if isinstance(private_key, ec.EllipticCurvePrivateKey) and not isinstance(
+        private_key.curve, _ECDSA_SIGNING_CURVES
+    ):
+        msg = (
+            f"Cannot sign with {key_label(private_key)}. ECDSA signing "
+            "supports P-256, P-384 and P-521. Existing signatures can still "
+            "be verified."
+        )
+        raise UnsupportedAlgorithmError(msg)
 
 
 def _rsa_hash(key: rsa.RSAPrivateKey | rsa.RSAPublicKey) -> hashes.HashAlgorithm:
@@ -111,7 +156,9 @@ def sign(private_key: PrivateKeyTypes, data: bytes) -> bytes:
         The signature.
 
     Raises:
-        UnsupportedAlgorithmError: If the key type cannot sign.
+        InvalidArgumentError: If an RSA key is smaller than 2048 bits.
+        UnsupportedAlgorithmError: If the key type cannot sign, or an ECDSA
+            key is not on P-256, P-384 or P-521.
 
     Example:
         >>> from encryption_helper.keys.generate import generate_ed25519
@@ -119,6 +166,7 @@ def sign(private_key: PrivateKeyTypes, data: bytes) -> bytes:
         >>> sig = sign(key, b"message")
         >>> verify(key.public_key(), sig, b"message")
     """
+    _require_signing_strength(private_key)
     if isinstance(private_key, rsa.RSAPrivateKey):
         algorithm = _rsa_hash(private_key)
         return private_key.sign(data, _pss(algorithm), algorithm)
