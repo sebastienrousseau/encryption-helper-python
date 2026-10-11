@@ -222,3 +222,24 @@ class TestReadableMeansDecryptable:
         assert (
             describe_container(header(aead_id=AEAD_AES_256_GCM_STREAM)).readable is True
         )
+
+
+class TestReadableAgreesWithTheReaders:
+    """``readable`` once restated the readers' rules, and had drifted."""
+
+    @pytest.mark.parametrize("streaming", [False, True])
+    def test_a_set_reserved_byte_is_not_readable(self, streaming):
+        import io
+
+        from encryption_helper.crypto.streaming import encrypt_stream
+
+        key = generate("x25519")
+        if streaming:
+            out = io.BytesIO()
+            encrypt_stream(key.public_key(), io.BytesIO(b"x"), out)
+            blob = bytearray(out.getvalue())
+        else:
+            blob = bytearray(encrypt(key.public_key(), b"x"))
+        assert describe_container(bytes(blob)).readable
+        blob[7] = 1  # magic(4) version kem aead -> reserved
+        assert not describe_container(bytes(blob)).readable

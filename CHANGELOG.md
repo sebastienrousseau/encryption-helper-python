@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **New signatures need 112-bit strength, like encryption already did.**
+  `sign` accepted an RSA key of any size, and ECDSA on a curve outside
+  P-256, P-384 and P-521 fell back to SHA-256 -- a 512-bit Brainpool key
+  signed at 128-bit collision strength. `sign` now refuses RSA below 2048
+  bits (`InvalidArgumentError`) and ECDSA off the NIST curves this package
+  generates (`UnsupportedAlgorithmError`). `verify` still accepts them, as
+  NIST SP 800-131A allows for legacy use, so existing signatures can still
+  be checked.
+- `describe_container` reported a container with a non-zero reserved byte as
+  `readable`, though both readers reject it. It now asks the readers' own
+  header validator instead of restating its rules.
 - **`scan` no longer passes over what it cannot read.** An unreadable file
   or directory was dropped without trace, so `scan --fail-on-finding` could
   exit 0 over a key it never opened. Each is now an `unreadable` finding

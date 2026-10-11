@@ -34,7 +34,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final
 
-from ..errors import InvalidArgumentError
+from ..errors import DecryptionError, InvalidArgumentError
 from .envelope import (
     AEAD_AES_256_GCM,
     AEAD_AES_256_GCM_STREAM,
@@ -46,8 +46,7 @@ from .envelope import (
     MAGIC,
     POST_QUANTUM_KEMS,
     QUANTUM_VULNERABLE_KEMS,
-    SUPPORTED_KEMS,
-    VERSION,
+    _parse_header,
 )
 
 __all__ = [
@@ -193,7 +192,8 @@ def describe_container(blob: bytes) -> ContainerInfo:
         )
         raise InvalidArgumentError(msg)
 
-    _, version, kem_id, aead_id, _, _ = HEADER_STRUCT.unpack(blob[:HEADER_SIZE])
+    header = blob[:HEADER_SIZE]
+    _, version, kem_id, aead_id, _, _ = HEADER_STRUCT.unpack(header)
     if kem_id in QUANTUM_VULNERABLE_KEMS:
         quantum_vulnerable: bool | None = True
     elif kem_id in POST_QUANTUM_KEMS:
@@ -202,9 +202,7 @@ def describe_container(blob: bytes) -> ContainerInfo:
         quantum_vulnerable = None
     return ContainerInfo(
         format_version=version,
-        readable=(
-            version == VERSION and kem_id in SUPPORTED_KEMS and aead_id in _AEAD_NAMES
-        ),
+        readable=_readable(header, aead_id),
         key_establishment=_KEM_NAMES.get(kem_id),
         key_establishment_id=kem_id,
         key_establishment_standard=_KEM_STANDARDS.get(kem_id),
@@ -213,3 +211,17 @@ def describe_container(blob: bytes) -> ContainerInfo:
         segmented=aead_id == AEAD_AES_256_GCM_STREAM,
         quantum_vulnerable=quantum_vulnerable,
     )
+
+
+def _readable(header: bytes, aead_id: int) -> bool:
+    """Whether a reader in this build would accept the header.
+
+    Asks the readers' own validator rather than restating its rules. A
+    restatement had already drifted: it ignored the reserved byte, so a
+    container both readers reject was described as readable.
+    """
+    try:
+        _parse_header(header, streaming=aead_id == AEAD_AES_256_GCM_STREAM)
+    except DecryptionError:
+        return False
+    return True
