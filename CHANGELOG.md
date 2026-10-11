@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Platform differences live in one adapter, and the permission claims are
+  now true.** `sys.platform` and `os.name` checks were spread over three
+  modules; they are now in `encryption_helper._platform`, and a test fails
+  if one appears elsewhere. The docs promised "0600 inside a 0700
+  directory", but the directory mode only applied to directories this
+  package created, and on Windows nothing is owner-only: a file inherits
+  its folder's ACL. Writing secret material now logs a warning when the
+  directory is writable by other users (sticky directories such as `/tmp`
+  excepted), and the README and docstrings say what Windows actually does.
+  A failing `fchmod` no longer leaks the temporary file's descriptor.
 - **New signatures need 112-bit strength, like encryption already did.**
   `sign` accepted an RSA key of any size, and ECDSA on a curve outside
   P-256, P-384 and P-521 fell back to SHA-256 -- a 512-bit Brainpool key

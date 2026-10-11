@@ -79,6 +79,7 @@ from cryptography.hazmat.primitives.asymmetric.types import (
     PublicKeyTypes,
 )
 
+from . import _platform
 from .crypto import metadata
 from .errors import InvalidArgumentError
 from .policy import NIST_LEGACY_DISALLOWED_FROM, assess
@@ -105,10 +106,6 @@ KIND_CERTIFICATE: Final = "certificate"
 KIND_CONTAINER: Final = "container"
 KIND_UNREADABLE: Final = "unreadable"
 
-#: Added to the flags of every candidate open: non-blocking, so a FIFO swapped
-#: in after the walk saw a regular file cannot stall the scan; no-follow, so a
-#: link swapped in is not read through. Absent on Windows, which needs neither.
-_SAFE_OPEN_FLAGS: Final = getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
 
 #: PEM banners that indicate a private key protected by a passphrase.
 _ENCRYPTED_BANNERS: Final = (
@@ -504,13 +501,11 @@ def classify(path: Path) -> Finding | None:
         return None
 
 
-def _safe_opener(path: str, flags: int) -> int:
-    return os.open(path, flags | _SAFE_OPEN_FLAGS)
-
-
 def _classify(path: Path) -> Finding | None:
     """:func:`classify`, letting a read failure propagate as ``OSError``."""
-    with open(path, "rb", opener=_safe_opener) as handle:
+    # Non-blocking and no-follow: a FIFO or link swapped in after the walk
+    # saw a regular file can neither stall the scan nor redirect it.
+    with open(path, "rb", opener=_platform.safe_opener) as handle:
         if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
             return None  # Replaced by a FIFO or device since the walk saw it.
         blob = handle.read(MAX_CANDIDATE_BYTES)

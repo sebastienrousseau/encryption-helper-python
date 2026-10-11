@@ -226,8 +226,9 @@ class TestPlatformBranches:
     @pytest.fixture
     def as_windows(self, monkeypatch):
         import encryption_helper._io as io_module
+        from encryption_helper import _platform
 
-        monkeypatch.setattr(io_module, "_WINDOWS", True)
+        monkeypatch.setattr(_platform, "WINDOWS", True)
         return io_module
 
     def test_write_succeeds_without_mode_syscalls(self, tmp_path, as_windows):

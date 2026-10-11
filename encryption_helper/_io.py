@@ -8,29 +8,34 @@ which on a typical system yields mode ``0644`` -- world readable. It also
 truncates an existing file without warning, which for key material is silent,
 unrecoverable data loss.
 
-:func:`secure_write_bytes` addresses both: it creates files at ``0600`` inside
-a ``0700`` directory, refuses to clobber an existing file unless explicitly
-told to, backs up anything it does replace, and writes atomically so an
-interrupted run cannot leave a truncated key behind.
+:func:`secure_write_bytes` addresses both: it creates files at ``0600``,
+creates missing directories at ``0700``, warns when a private key is about to
+land in a directory other users can write to, refuses to clobber an existing
+file unless explicitly told to, backs up anything it does replace, and writes
+atomically so an interrupted run cannot leave a truncated key behind.
 
 .. note::
-   POSIX permission bits are enforced directly. On Windows the mode argument
-   is advisory -- see :func:`secure_write_bytes` for details.
+   POSIX permission bits are enforced directly. On Windows they are not: a
+   file inherits its folder's ACL, so a key is as private as its folder. See
+   :mod:`encryption_helper._platform`.
 """
 
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import stat
-import sys
 import tempfile
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, NamedTuple
 
+from . import _platform
 from .errors import KeyExistsError, KeyReadError, KeyWriteError
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "InputTooLargeError",
@@ -49,8 +54,6 @@ PUBLIC_FILE_MODE = 0o644
 
 #: Mode for directories holding secret material: owner access only.
 SECRET_DIR_MODE = 0o700
-
-_WINDOWS = sys.platform == "win32"
 
 
 class WriteOutcome(NamedTuple):
@@ -102,26 +105,23 @@ def resolve_destination(path: str | os.PathLike[str]) -> Path:
     return candidate.parent.resolve() / candidate.name
 
 
-def _fsync_directory(directory: Path) -> None:
-    """Flush a directory entry so a rename survives a crash.
+def _warn_if_exposed(directory: Path, mode: int) -> None:
+    """Warn when a secret is about to be written where others can replace it.
 
-    Renaming a file is atomic, but on many filesystems the *directory entry*
-    recording it is not durable until the directory itself is synced. Failure
-    is ignored: not every platform or filesystem supports this, and it is a
-    durability improvement rather than a correctness requirement.
+    Advisory rather than a refusal: shared CI workspaces, container mounts
+    and managed filesystems have permission models mode bits do not capture,
+    and refusing would break them while promising more than can be checked.
     """
-    if _WINDOWS:  # pragma: no cover - Windows cannot open a directory
-        return
-    try:
-        fd = os.open(directory, os.O_RDONLY)
-    except OSError:  # pragma: no cover - unusual filesystem
-        return
-    try:
-        os.fsync(fd)
-    except OSError:  # pragma: no cover - unusual filesystem
-        pass
-    finally:
-        os.close(fd)
+    if mode & 0o077:
+        return  # Not a secret: a public key may live anywhere.
+    reason = _platform.exposed_directory(directory)
+    if reason is not None:
+        logger.warning(
+            "Writing secret material to %s, but %s. Another user could "
+            "replace the file. Prefer a directory only you can write to.",
+            directory,
+            reason,
+        )
 
 
 def _timestamp() -> str:
@@ -165,9 +165,8 @@ class _Displaced(NamedTuple):
                 _commit_without_clobbering(self.backup, self.target)
         except (KeyExistsError, OSError):
             return False
-        if not _WINDOWS:
-            with contextlib.suppress(OSError):
-                self.target.chmod(self.mode)
+        with contextlib.suppress(OSError):
+            _platform.restrict_path(self.target, self.mode)
         return True
 
     def raced(self, exc: KeyExistsError) -> KeyExistsError:
@@ -210,8 +209,7 @@ def _displace(path: Path) -> _Displaced:
         suffix += 1
     try:
         path.replace(backup)
-        if not _WINDOWS:
-            backup.chmod(original_mode)
+        _platform.restrict_path(backup, original_mode)
     except OSError as exc:
         msg = f"Could not back up the existing file at {path}: {exc.strerror}"
         raise KeyWriteError(msg) from exc
@@ -357,6 +355,7 @@ def _write_atomically(target: Path, data: bytes, *, mode: int, dir_mode: int) ->
     except OSError as exc:
         msg = f"Could not create directory {parent}: {exc.strerror}"
         raise KeyWriteError(msg) from exc
+    _warn_if_exposed(parent, mode)
 
     try:
         tmp_fd, tmp_name = tempfile.mkstemp(
@@ -368,14 +367,15 @@ def _write_atomically(target: Path, data: bytes, *, mode: int, dir_mode: int) ->
 
     tmp_path = Path(tmp_name)
     try:
-        if not _WINDOWS:
-            os.fchmod(tmp_fd, mode)
+        # Adopt the descriptor before anything can fail, so it is closed on
+        # every path; a failing fchmod used to leak it.
         with os.fdopen(tmp_fd, "wb") as handle:
+            _platform.restrict_descriptor(handle.fileno(), mode)
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
         _commit_without_clobbering(tmp_path, target)
-        _fsync_directory(parent)
+        _platform.fsync_directory(parent)
     except KeyExistsError:
         # Lost a race for the name. The temporary file holds the complete new
         # content -- for a private key, a second copy of the secret -- so it
@@ -488,6 +488,7 @@ def secure_write_stream(
     parent = target.parent
     try:
         parent.mkdir(parents=True, exist_ok=True, mode=dir_mode)
+        _warn_if_exposed(parent, mode)
         tmp_fd, tmp_name = tempfile.mkstemp(
             prefix=f".{target.name}.", suffix=".tmp", dir=parent
         )
@@ -498,9 +499,8 @@ def secure_write_stream(
     tmp_path = Path(tmp_name)
     outcome: list[WriteOutcome] = []
     try:
-        if not _WINDOWS:
-            os.fchmod(tmp_fd, mode)
         with os.fdopen(tmp_fd, "wb") as handle:
+            _platform.restrict_descriptor(handle.fileno(), mode)
             yield handle, outcome
             handle.flush()
             os.fsync(handle.fileno())
@@ -517,7 +517,7 @@ def secure_write_stream(
         if _reject_existing_destination(target, overwrite=overwrite):
             displaced = _displace(target)
         _commit_without_clobbering(tmp_path, target)
-        _fsync_directory(parent)
+        _platform.fsync_directory(parent)
     except BaseException as exc:
         with contextlib.suppress(OSError):
             tmp_path.unlink()

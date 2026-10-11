@@ -1010,20 +1010,25 @@ class TestExplicitPassphraseWhenLoading:
 
 
 class TestWindowsPermissionGuard:
-    def test_permission_warning_is_skipped_on_windows(self, tmp_path, monkeypatch):
+    def test_permission_warning_is_skipped_on_windows(
+        self, tmp_path, monkeypatch, capsys
+    ):
         """Unix mode bits do not describe an NTFS ACL; do not pretend."""
+        from encryption_helper import _platform
         from encryption_helper.cli import _passphrase as cli_module
 
         secret_file = tmp_path / "pass.txt"
         secret_file.write_bytes(b"secret")
         secret_file.chmod(0o644)
-        monkeypatch.setattr(cli_module.sys, "platform", "win32")
+        monkeypatch.setattr(_platform, "WINDOWS", True)
 
-        def must_not_stat(_self):
+        def must_not_stat(*_args, **_kwargs):
             msg = "mode must not be inspected on Windows"
             raise AssertionError(msg)
 
+        monkeypatch.setattr("pathlib.Path.stat", must_not_stat)
         cli_module._warn_if_passphrase_file_is_readable(secret_file)
+        assert capsys.readouterr().err == ""
 
 
 class TestConvertKeepsProtection:

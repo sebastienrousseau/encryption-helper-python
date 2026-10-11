@@ -735,12 +735,12 @@ class TestBufferedPathEdges:
 
     def test_streamed_output_skips_fchmod_on_windows(self, tmp_path, monkeypatch):
         """NTFS uses ACLs; os.fchmod cannot express them, so it is skipped."""
-        from encryption_helper import _io as cli_module
+        from encryption_helper import _platform as cli_module
 
         keys = tmp_path / "k"
         main(keygen(keys, "--algorithm", "x25519"))
         (tmp_path / "m.txt").write_bytes(b"payload")
-        monkeypatch.setattr(cli_module, "_WINDOWS", True)
+        monkeypatch.setattr(cli_module, "WINDOWS", True)
 
         assert (
             main(

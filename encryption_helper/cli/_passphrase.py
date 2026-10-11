@@ -13,12 +13,12 @@ import argparse
 import getpass
 import logging
 import os
-import stat
 import sys
 from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric.types import PrivateKeyTypes
 
+from .. import _platform
 from .._io import (
     InputTooLargeError,
     read_bytes,
@@ -165,13 +165,8 @@ def _warn_if_passphrase_file_is_readable(path: Path) -> None:
     On Windows this is skipped entirely rather than pretending Unix mode bits
     describe an ACL.
     """
-    if sys.platform == "win32":
-        return
-    try:
-        mode = stat.S_IMODE(path.stat().st_mode)
-    except OSError:  # pragma: no cover - reported by the subsequent read
-        return
-    if mode & 0o077:
+    mode = _platform.group_or_world_readable(path)
+    if mode is not None:
         print(
             f"warning: passphrase file {path} is mode {mode:04o}, readable by "
             "others.\n"

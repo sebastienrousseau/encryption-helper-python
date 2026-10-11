@@ -5,9 +5,12 @@
 This module is the only place in the package that writes key material, so the
 permission and overwrite rules live in exactly one auditable location.
 
-Private keys are written at mode ``0600`` inside a ``0700`` directory. Public
-keys are written at ``0644``: they are meant to be shared, and treating them as
-secret teaches people to protect the wrong file.
+On POSIX, private keys are written at mode ``0600`` and missing directories are
+created at ``0700``; a warning is logged when the destination directory is
+writable by other users. Public keys are written at ``0644``: they are meant to
+be shared, and treating them as secret teaches people to protect the wrong
+file. On Windows mode bits do not apply and a key inherits its folder's ACL;
+see :mod:`encryption_helper._platform`.
 
 Writing a *pair* is the interesting part. Ordinary filesystems offer no
 cross-file transaction, so this module approximates one:
@@ -40,6 +43,7 @@ from cryptography.hazmat.primitives.asymmetric import (
 )
 from cryptography.hazmat.primitives.asymmetric.types import PrivateKeyTypes
 
+from .. import _platform
 from .._io import (
     PUBLIC_FILE_MODE,
     SECRET_FILE_MODE,
@@ -79,8 +83,9 @@ class KeyGenerationResult:
     secret is not in it.
 
     Attributes:
-        private_key_path: Path of the private key file, mode ``0600``.
-        public_key_path: Path of the public key file, mode ``0644``.
+        private_key_path: Path of the private key file, mode ``0600`` on
+            POSIX.
+        public_key_path: Path of the public key file, mode ``0644`` on POSIX.
         algorithm: Algorithm name, for example ``"rsa"`` or ``"ed25519"``.
         key_size: Modulus or curve size in bits, where the concept applies.
         fingerprint: SHA-256 fingerprint of the public key, matching
@@ -302,8 +307,8 @@ def _undo(outcome: WriteOutcome) -> None:
     try:
         if outcome.backup is not None:
             outcome.backup.replace(outcome.path)
-            if outcome.backup_mode is not None and os.name != "nt":
-                outcome.path.chmod(outcome.backup_mode)
+            if outcome.backup_mode is not None:
+                _platform.restrict_path(outcome.path, outcome.backup_mode)
         elif not outcome.replaced:
             outcome.path.unlink(missing_ok=True)
     except OSError:  # pragma: no cover - best effort during failure handling
