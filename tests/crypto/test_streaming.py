@@ -409,3 +409,51 @@ class TestPartialReadsAndWrites:
             segment_size=SEGMENT,
         )
         assert open_sealed(x25519_key, out.getvalue()) == data
+
+
+class TestContentKeyLength:
+    """A sender can wrap a key of any length with RSA-OAEP.
+
+    The one-shot reader always rejected anything but a 256-bit content key;
+    the streaming reader once handed the unwrapped bytes straight to AES-GCM,
+    so a 128-bit key was accepted and a 40-bit one escaped as a bare
+    ``ValueError``. Both readers now share the check inside decapsulation.
+    """
+
+    @staticmethod
+    def _forge(rsa_key, content_key: bytes) -> bytes:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        from encryption_helper.crypto import envelope, streaming
+
+        genuine = seal(rsa_key, b"")
+        size = envelope.HEADER_STRUCT.size
+        magic, version, kem_id, aead_id, reserved, encap_len = (
+            envelope.HEADER_STRUCT.unpack(bytes(genuine[:size]))
+        )
+        start = size + encap_len
+        stream_header = bytes(genuine[start : start + streaming._STREAM_HEADER_SIZE])
+        prefix = stream_header[streaming._STREAM_HEADER_STRUCT.size :]
+
+        wrapped = rsa_key.public_key().encrypt(content_key, envelope._OAEP_PADDING)
+        header = envelope.HEADER_STRUCT.pack(
+            magic, version, kem_id, aead_id, reserved, len(wrapped)
+        )
+        try:
+            sealed = AESGCM(content_key).encrypt(
+                streaming._segment_nonce(prefix, 0, final=True),
+                b"forged",
+                header + wrapped + stream_header,
+            )
+        except ValueError:  # Not a usable AES key at all.
+            sealed = bytes(16)
+        return header + wrapped + stream_header + sealed
+
+    @pytest.mark.parametrize("length", [5, 16, 24, 31, 33])
+    def test_a_wrongly_sized_content_key_is_rejected(self, rsa_key, length):
+        blob = self._forge(rsa_key, b"\x01" * length)
+        with pytest.raises(DecryptionError, match="wrong length"):
+            open_sealed(rsa_key, blob)
+
+    def test_the_correct_length_is_what_the_check_admits(self, rsa_key):
+        blob = self._forge(rsa_key, b"\x01" * 32)
+        assert open_sealed(rsa_key, blob) == b"forged"

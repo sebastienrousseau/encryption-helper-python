@@ -193,9 +193,9 @@ MUTATIONS: tuple[Mutation, ...] = (
         id="envelope-keylen",
         property="a recovered content key of the wrong length is rejected",
         path="encryption_helper/crypto/envelope.py",
-        old="    if len(content_key) != _CONTENT_KEY_SIZE:",
-        new="    if False:",
-        tests=("tests/crypto/test_envelope.py",),
+        old="        if len(content_key) != _CONTENT_KEY_SIZE:",
+        new="        if False:",
+        tests=("tests/crypto/test_envelope.py", "tests/crypto/test_streaming.py"),
     ),
     # --- streaming --------------------------------------------------------
     Mutation(

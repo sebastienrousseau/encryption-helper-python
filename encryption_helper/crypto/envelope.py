@@ -288,9 +288,17 @@ def _decapsulate(
         if not isinstance(private_key, rsa.RSAPrivateKey):
             raise _wrong_key_type(_RSA_LABEL, private_key)
         try:
-            return private_key.decrypt(encapsulation, _OAEP_PADDING)
+            content_key = private_key.decrypt(encapsulation, _OAEP_PADDING)
         except ValueError as exc:
             raise _opaque_kem_failure() from exc
+        # OAEP returns whatever the sender wrapped. The KDF-based mechanisms
+        # always yield the right length, so this is the one place a short
+        # key can enter, and checking it here covers every reader: a key of
+        # another valid AES size would otherwise be silently accepted.
+        if len(content_key) != _CONTENT_KEY_SIZE:
+            msg = "Recovered content key has the wrong length; container is invalid."
+            raise DecryptionError(msg)
+        return content_key
 
     if kem_id in (KEM_MLKEM768, KEM_MLKEM1024):
         if not isinstance(
@@ -541,11 +549,6 @@ def decrypt(
     """
     header, kem_id, encapsulation, nonce, ciphertext = _parse(blob)
     content_key = _decapsulate(private_key, kem_id, encapsulation)
-
-    if len(content_key) != _CONTENT_KEY_SIZE:
-        msg = "Recovered content key has the wrong length; container is invalid."
-        raise DecryptionError(msg)
-
     try:
         return AESGCM(content_key).decrypt(
             nonce, ciphertext, _aad(header, encapsulation, nonce, associated_data)

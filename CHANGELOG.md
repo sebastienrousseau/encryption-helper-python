@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The streaming reader rejects a content key of the wrong length.** RSA-OAEP
+  returns whatever the sender wrapped, and `decrypt_stream` passed it straight
+  to AES-GCM: a container carrying a 128-bit key decrypted successfully, and a
+  key of an invalid size escaped as a bare `ValueError` instead of
+  `DecryptionError`. The length check the one-shot reader already had now
+  lives in decapsulation, so both readers share it.
 - **Writing to stdout no longer corrupts the output.** Without `-q` or
   `--json`, `encrypt`, `decrypt`, `sign` and `convert` appended their
   human-readable report (`Encrypted N bytes to <stdout>`) to the data on
