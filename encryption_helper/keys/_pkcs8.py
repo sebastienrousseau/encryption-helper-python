@@ -39,6 +39,12 @@ PBKDF2_ITERATIONS: Final = 600_000
 #: Keys protected below this are reported as weak when loaded.
 WEAK_ITERATIONS_BELOW: Final = 100_000
 
+#: Keys demanding more than this are refused before any derivation runs. The
+#: count is read from the file, so without a ceiling a crafted key costs its
+#: loader whatever it asks: 2**31 iterations is minutes of CPU per attempt.
+#: Ten million is more than sixteen times what this package writes.
+MAX_ITERATIONS: Final = 10_000_000
+
 _SALT_SIZE: Final = 16
 _IV_SIZE: Final = 16
 _KEY_SIZE: Final = 32

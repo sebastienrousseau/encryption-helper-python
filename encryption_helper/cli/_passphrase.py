@@ -20,6 +20,7 @@ from pathlib import Path
 from cryptography.hazmat.primitives.asymmetric.types import PrivateKeyTypes
 
 from .._io import (
+    InputTooLargeError,
     read_bytes,
 )
 from ..errors import (
@@ -72,7 +73,7 @@ def _passphrase_from_source(args: argparse.Namespace) -> bytes | None:
         path = Path(args.passphrase_file).expanduser()
         _reject_oversized_passphrase_file(path)
         _warn_if_passphrase_file_is_readable(path)
-        data = _strip_one_trailing_newline(read_bytes(path))
+        data = _strip_one_trailing_newline(_read_passphrase_file(path))
         if not data.strip():
             _fail_usage(
                 f"Passphrase file {args.passphrase_file} is empty or contains "
@@ -109,6 +110,25 @@ def _as_passphrase_bytes(value: str | bytes) -> bytes:
         b'\xff\xfe raw'
     """
     return value if isinstance(value, bytes) else value.encode("utf-8")
+
+
+def _read_passphrase_file(path: Path) -> bytes:
+    """Read a passphrase file, never more than the limit.
+
+    :func:`_reject_oversized_passphrase_file` cannot bound a FIFO or
+    ``<(cmd)`` -- the usual way to pass a secret without a file on disk --
+    because they report a size of 0; this read is the bound.
+
+    Raises:
+        SystemExit: If the file holds more than the limit.
+    """
+    try:
+        return read_bytes(path, limit=MAX_PASSPHRASE_FILE_BYTES)
+    except InputTooLargeError:
+        _fail_usage(
+            f"Passphrase file {path} exceeds the {MAX_PASSPHRASE_FILE_BYTES}-"
+            "byte limit. A passphrase file is expected to contain a passphrase."
+        )
 
 
 def _reject_oversized_passphrase_file(path: Path) -> None:

@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Every read of caller-named input is bounded by the bytes read.** The CLI
+  checked `stat().st_size` and then read the whole file, but a FIFO, a
+  device or `<(cmd)` reports a size of 0: `--in <(cmd)` and
+  `--passphrase-file /dev/zero` read without limit. `--max-size` accepted
+  negative values, and `-2` became `read(-1)`. Key and signature files had
+  no limit at all. All of them now read at most one byte past their limit
+  (1 MiB for key and signature files), and `--max-size` must be at least 1.
+- **An encrypted key can no longer demand unbounded work from its loader.**
+  The PBKDF2 iteration count of a PKCS#8 key and the bcrypt round count of
+  an OpenSSH key are read from the file; a crafted key asking for 2^31
+  iterations costs about three minutes of CPU per attempt. Keys above
+  10,000,000 iterations or 1,000 rounds are refused before any derivation
+  runs -- more than sixteen times what this package writes, and well above
+  ssh-keygen's default of 16.
 - **Losing a write race no longer orphans the new private key.** When another
   process created the destination between the backup and the commit,
   `secure_write_bytes` raised `KeyExistsError` -- which its cleanup handlers,

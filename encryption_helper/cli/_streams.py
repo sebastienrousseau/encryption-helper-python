@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import IO
 
 from .._io import (
+    InputTooLargeError,
     read_bytes,
     resolve_destination,
     secure_write_bytes,
@@ -67,7 +68,15 @@ def _read_input(source: str, *, max_size: int = DEFAULT_MAX_INPUT_BYTES) -> byte
             "Raise --max-size if you have the memory for roughly four times "
             "that."
         )
-    return read_bytes(path)
+    # The stat() above gives a precise message for an ordinary file, but it
+    # is not the bound: a FIFO, /dev/stdin or <(cmd) reports a size of 0.
+    try:
+        return read_bytes(path, limit=max_size)
+    except InputTooLargeError:
+        _fail_usage(
+            f"{path} exceeds the {max_size}-byte limit. Raise --max-size if "
+            "you have the memory for roughly four times that."
+        )
 
 
 def _write_output(destination: str, data: bytes, *, mode: int, force: bool) -> str:

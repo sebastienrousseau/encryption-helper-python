@@ -57,6 +57,10 @@ MAX_PASSPHRASE_FILE_BYTES: Final = 64 * 1024
 #: Raise it with --max-size if you have the headroom.
 DEFAULT_MAX_INPUT_BYTES: Final = 64 * 1024 * 1024
 
+#: Largest detached signature file read. The largest signature this package
+#: produces, ML-DSA-87, is 4,627 bytes.
+MAX_SIGNATURE_FILE_BYTES: Final = 1024 * 1024
+
 #: Bytes of a container needed before its AEAD identifier can be read:
 #: 4 magic, 1 version, 1 kem_id, then the aead_id byte.
 _AEAD_ID_OFFSET: Final = 6

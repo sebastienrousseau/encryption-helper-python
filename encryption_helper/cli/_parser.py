@@ -34,6 +34,24 @@ from ._commands import (
 from ._constants import _LOG_LEVELS, _STDIO, DEFAULT_MAX_INPUT_BYTES
 from ._output import _VersionAction
 
+
+def _positive_size(text: str) -> int:
+    """Parse a byte count of at least 1.
+
+    ``--max-size -2`` once became ``read(-1)`` -- read everything -- so a
+    typo disabled the limit it was meant to set.
+    """
+    try:
+        value = int(text)
+    except ValueError:
+        msg = f"invalid int value: {text!r}"
+        raise argparse.ArgumentTypeError(msg) from None
+    if value < 1:
+        msg = f"must be at least 1 byte, not {value}"
+        raise argparse.ArgumentTypeError(msg)
+    return value
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -107,7 +125,7 @@ def _add_io_flags(parser: argparse.ArgumentParser, *, output: bool = True) -> No
     )
     parser.add_argument(
         "--max-size",
-        type=int,
+        type=_positive_size,
         default=DEFAULT_MAX_INPUT_BYTES,
         metavar="BYTES",
         help=(

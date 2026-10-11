@@ -33,6 +33,7 @@ from typing import IO, NamedTuple
 from .errors import KeyExistsError, KeyReadError, KeyWriteError
 
 __all__ = [
+    "InputTooLargeError",
     "WriteOutcome",
     "read_bytes",
     "resolve_destination",
@@ -546,16 +547,38 @@ def _outcome(
     )
 
 
-def read_bytes(path: str | os.PathLike[str]) -> bytes:
+class InputTooLargeError(KeyReadError):
+    """A file held more than its reader accepts.
+
+    Attributes:
+        path: The file that was read.
+        limit: The largest size, in bytes, that would have been accepted.
+    """
+
+    def __init__(self, path: Path, limit: int) -> None:
+        """Record the file and the limit it exceeded."""
+        self.path = path
+        self.limit = limit
+        super().__init__(f"{path} exceeds the {limit}-byte limit for this input.")
+
+
+def read_bytes(path: str | os.PathLike[str], *, limit: int | None = None) -> bytes:
     """Read a file in binary mode, raising a typed error on failure.
+
+    With ``limit``, at most ``limit + 1`` bytes are ever read, whatever the
+    file claims to be. A size check from ``stat()`` cannot do that: a FIFO,
+    ``/dev/zero`` or a process substitution reports a size of 0, and a
+    regular file can grow between the check and the read.
 
     Args:
         path: File to read.
+        limit: Largest accepted size in bytes, or :data:`None` for no limit.
 
     Returns:
         The file's contents.
 
     Raises:
+        InputTooLargeError: If the file holds more than ``limit`` bytes.
         KeyReadError: If the file is missing, is a directory, or cannot be
             read.
 
@@ -568,7 +591,10 @@ def read_bytes(path: str | os.PathLike[str]) -> bytes:
     """
     source = Path(path).expanduser()
     try:
-        return source.read_bytes()
+        if limit is None:
+            return source.read_bytes()
+        with source.open("rb") as handle:
+            data = handle.read(limit + 1)
     except FileNotFoundError as exc:
         msg = f"No such file: {source}"
         raise KeyReadError(msg) from exc
@@ -578,3 +604,6 @@ def read_bytes(path: str | os.PathLike[str]) -> bytes:
     except OSError as exc:
         msg = f"Could not read {source}: {exc.strerror}"
         raise KeyReadError(msg) from exc
+    if len(data) > limit:
+        raise InputTooLargeError(source, limit)
+    return data

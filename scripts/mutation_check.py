@@ -90,6 +90,22 @@ MUTATIONS: tuple[Mutation, ...] = (
         tests=("tests/test_io.py",),
     ),
     Mutation(
+        id="io-bounded-read",
+        property="a bounded read refuses input beyond its limit",
+        path="encryption_helper/_io.py",
+        old="    if len(data) > limit:",
+        new="    if False:",
+        tests=("tests/test_bounded_reads.py",),
+    ),
+    Mutation(
+        id="keys-kdf-ceiling",
+        property="a key demanding excessive PBKDF2 work is refused",
+        path="encryption_helper/keys/load.py",
+        old="    if iterations is not None and iterations > _pkcs8.MAX_ITERATIONS:",
+        new="    if False:",
+        tests=("tests/test_bounded_reads.py",),
+    ),
+    Mutation(
         id="io-mode",
         property="private keys are written owner-only, not at the umask default",
         path="encryption_helper/_io.py",

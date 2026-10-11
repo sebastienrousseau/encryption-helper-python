@@ -57,6 +57,7 @@ from ._constants import (
     _PEEK_SIZE,
     EXIT_FINDINGS,
     EXIT_OK,
+    MAX_SIGNATURE_FILE_BYTES,
 )
 from ._output import _emit, _fail_usage, runtime_version
 from ._passphrase import (
@@ -390,7 +391,7 @@ def _cmd_verify(args: argparse.Namespace) -> int:
     public_key = load_public_key_file(args.public_key)
     verify(
         public_key,
-        read_bytes(args.signature),
+        read_bytes(args.signature, limit=MAX_SIGNATURE_FILE_BYTES),
         _read_input(args.input, max_size=args.max_size),
     )
     _emit(args, "Signature is valid.", {"valid": True})

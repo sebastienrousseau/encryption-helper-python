@@ -13,8 +13,11 @@ distinction is only useful to someone probing a key they should not have.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
 import os
+from typing import Final
 
 from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import serialization
@@ -37,6 +40,19 @@ __all__ = [
 ]
 
 _PEM_MARKER = b"-----BEGIN"
+
+#: Largest key file the file loaders read. The biggest key this package
+#: handles, an encrypted ML-DSA-87 or RSA-4096 PEM, is a few kilobytes; the
+#: cap exists so a path to /dev/zero or a huge file fails fast instead of
+#: exhausting memory.
+MAX_KEY_FILE_BYTES: Final = 1024 * 1024
+
+#: Largest bcrypt round count accepted in an OpenSSH private key. ssh-keygen
+#: writes 16 by default, and ``-a 100`` is generous; the cost is linear and
+#: read from the file, so it needs the same ceiling as PBKDF2.
+MAX_BCRYPT_ROUNDS: Final = 1_000
+
+_OPENSSH_MAGIC = b"openssh-key-v1\x00"
 _OPENSSH_PUBLIC_PREFIXES = (b"ssh-", b"ecdsa-sha2-", b"sk-ssh-", b"sk-ecdsa-")
 
 
@@ -71,6 +87,9 @@ def load_private_key(
         raise KeyReadError(msg)
     last_error: Exception
 
+    if passphrase is not None:
+        _refuse_excessive_kdf_cost(data)
+
     try:
         if b"OPENSSH PRIVATE KEY" in data:
             return serialization.load_ssh_private_key(data, password=passphrase)
@@ -103,6 +122,69 @@ def load_private_key(
         "unsupported format, or protected by a different passphrase."
     )
     raise KeyReadError(msg) from last_error
+
+
+def _refuse_excessive_kdf_cost(data: bytes) -> None:
+    """Refuse a key whose stored derivation cost exceeds the ceiling.
+
+    Runs before decryption is attempted: the point is to never start the
+    derivation. Input this cannot parse is left for the real loader to
+    reject, so this never becomes the reason a valid key fails to load.
+    """
+    if b"OPENSSH PRIVATE KEY" in data:
+        rounds = _openssh_bcrypt_rounds(data)
+        if rounds is not None and rounds > MAX_BCRYPT_ROUNDS:
+            msg = (
+                f"The private key asks for {rounds} bcrypt rounds, more than "
+                f"the {MAX_BCRYPT_ROUNDS} this package will run. Re-protect it "
+                "with fewer rounds (ssh-keygen -p -a 100)."
+            )
+            raise KeyReadError(msg)
+        return
+    der = _pkcs8.der_from_pem(data) if data.lstrip().startswith(_PEM_MARKER) else data
+    iterations = _pkcs8.pbkdf2_iterations(der) if der is not None else None
+    if iterations is not None and iterations > _pkcs8.MAX_ITERATIONS:
+        msg = (
+            f"The private key asks for {iterations} PBKDF2 iterations, more "
+            f"than the {_pkcs8.MAX_ITERATIONS} this package will run."
+        )
+        raise KeyReadError(msg)
+
+
+def _openssh_bcrypt_rounds(data: bytes) -> int | None:
+    """Return the bcrypt round count of an OpenSSH private key, if any.
+
+    The layout is the magic ``openssh-key-v1`` and a NUL, then three
+    length-prefixed strings: cipher name, KDF name, KDF options. For bcrypt
+    the options are a length-prefixed salt and a big-endian uint32 count.
+    """
+    try:
+        body = data.split(b"-----BEGIN OPENSSH PRIVATE KEY-----", 1)[1]
+        raw = base64.b64decode(b"".join(body.split(b"-----END", 1)[0].split()))
+        if not raw.startswith(_OPENSSH_MAGIC):
+            return None
+        _cipher, offset = _ssh_string(raw, len(_OPENSSH_MAGIC))
+        kdf, offset = _ssh_string(raw, offset)
+        options, _ = _ssh_string(raw, offset)
+        _salt, offset = _ssh_string(options, 0)
+    except (IndexError, ValueError, binascii.Error):
+        return None
+    if kdf != b"bcrypt" or len(options) != offset + 4:
+        return None
+    return int.from_bytes(options[offset:], "big")
+
+
+def _ssh_string(buffer: bytes, offset: int) -> tuple[bytes, int]:
+    """Read one SSH wire-format string; return ``(value, next_offset)``.
+
+    Raises:
+        ValueError: If the length prefix or the string is truncated.
+    """
+    start = offset + 4
+    end = start + int.from_bytes(buffer[offset:start], "big")
+    if start > len(buffer) or end > len(buffer):
+        raise ValueError
+    return buffer[start:end], end
 
 
 def _warn_if_weakly_protected(der: bytes | None) -> None:
@@ -182,7 +264,9 @@ def load_private_key_file(
     Raises:
         KeyReadError: If the file cannot be read or decoded.
     """
-    return load_private_key(read_bytes(path), passphrase=passphrase)
+    return load_private_key(
+        read_bytes(path, limit=MAX_KEY_FILE_BYTES), passphrase=passphrase
+    )
 
 
 def load_public_key_file(path: str | os.PathLike[str]) -> PublicKeyTypes:
@@ -197,4 +281,4 @@ def load_public_key_file(path: str | os.PathLike[str]) -> PublicKeyTypes:
     Raises:
         KeyReadError: If the file cannot be read or decoded.
     """
-    return load_public_key(read_bytes(path))
+    return load_public_key(read_bytes(path, limit=MAX_KEY_FILE_BYTES))
