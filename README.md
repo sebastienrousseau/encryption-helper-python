@@ -313,12 +313,15 @@ estate/partner-sftp.pub.pem              public-key             rsa-2048     mig
 estate/statement.enc                     container              ml-kem-768   none
 estate/statements.pub.pem                public-key             mlkem-768    none
 
-4 examined, 2 needing migration, 0 needing manual review.
+4 found, 2 needing migration, 0 needing manual review.
 1 below 112-bit strength: already disallowed by NIST SP 800-131A. Replace these first.
 ```
 
-- Files are classified by **content**, not by name. Symbolic links are not
-  followed.
+- Files are classified by **content**, not by name. Symbolic links inside
+  the tree are not followed.
+- **Nothing is skipped silently.** A file or directory the scan cannot read
+  is reported as `unreadable` and counts as needing review, so a permission
+  problem cannot make a tree look clean.
 - **No passphrase is ever requested.** An encrypted private key is reported
   as needing manual review, not as safe.
 - An RSA key can both encrypt and sign, so it has two possible successors.

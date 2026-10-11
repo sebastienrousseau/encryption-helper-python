@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`scan` no longer passes over what it cannot read.** An unreadable file
+  or directory was dropped without trace, so `scan --fail-on-finding` could
+  exit 0 over a key it never opened. Each is now an `unreadable` finding
+  that counts as needing attention. Files are opened without blocking or
+  following a link, so a FIFO or link swapped in after the walk saw a
+  regular file can no longer stall or redirect the scan. The walk is
+  iterative: `os.walk` recursed on Python 3.10 and 3.11, and a deep tree
+  aborted the scan with `RecursionError`. A path the caller names is now
+  scanned whether or not it is a link (a linked file used to be skipped
+  while a linked directory was walked); links beneath it are still never
+  followed. The text report says "N found" rather than "N examined", which
+  overstated what `examined` counts.
 - **The MCP server can no longer be stalled or flooded by one request.** It
   is single-threaded, so a stuck call ends the session. `inspect_container`
   and `fingerprint_public_key` on a FIFO inside the root blocked forever;

@@ -62,7 +62,11 @@
             "by_kind"
           ],
           "properties": {
-            "examined": { "type": "integer", "minimum": 0 },
+            "examined": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of findings: files holding recognised cryptographic material, plus files and directories that could not be read. Not the number of files visited."
+            },
             "action_required": { "type": "integer", "minimum": 0 },
             "quantum_vulnerable": { "type": "integer", "minimum": 0 },
             "undetermined": { "type": "integer", "minimum": 0 },
@@ -102,7 +106,8 @@
                   "private-key",
                   "encrypted-private-key",
                   "certificate",
-                  "container"
+                  "container",
+                  "unreadable"
                 ]
               },
               "algorithm": { "type": ["string", "null"] },

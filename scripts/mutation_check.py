@@ -106,6 +106,14 @@ MUTATIONS: tuple[Mutation, ...] = (
         tests=("tests/test_bounded_reads.py",),
     ),
     Mutation(
+        id="inventory-unreadable",
+        property="a file the scan cannot read is reported, not skipped",
+        path="encryption_helper/inventory.py",
+        old="                finding = _unreadable(candidate, exc)",
+        new="                finding = None",
+        tests=("tests/test_inventory_walk.py",),
+    ),
+    Mutation(
         id="io-mode",
         property="private keys are written owner-only, not at the umask default",
         path="encryption_helper/_io.py",

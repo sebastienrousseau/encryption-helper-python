@@ -500,7 +500,7 @@ def _scan_rows(findings: list[Finding], summary: dict[str, Any]) -> list[str]:
         )
     rows += [
         "",
-        f"{summary['examined']} examined, "
+        f"{summary['examined']} found, "
         f"{summary['action_required']} needing migration, "
         f"{summary['undetermined']} needing manual review.",
     ]

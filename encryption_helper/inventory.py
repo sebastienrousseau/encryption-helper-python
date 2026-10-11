@@ -23,10 +23,15 @@ What this module will not do
   is reported as present but undetermined: the algorithm is inside the
   encrypted structure, and the honest answer is that it cannot be read
   without the passphrase. A scan is not a reason to handle secrets.
-* It never follows a symbolic link, so a link planted in a scanned tree
-  cannot redirect the scan outside it or create a traversal loop.
-* It reads only regular files, so a named pipe in the tree cannot block the
-  scan indefinitely.
+* It never follows a symbolic link found inside a scanned tree, so a planted
+  link cannot redirect the scan outside it or create a traversal loop. A path
+  you name is taken as given, whether or not it is itself a link.
+* It reads only regular files, and opens each without blocking or following
+  a link, so a named pipe -- even one swapped in during the scan -- cannot
+  block it indefinitely.
+* It never silently skips what it cannot read. A file or directory that
+  cannot be opened becomes an ``unreadable`` finding, which counts as
+  needing attention: a file that could not be assessed is not a clean one.
 * It reads at most :data:`MAX_CANDIDATE_BYTES` from any one file, so a large
   file that happens to begin like a certificate cannot exhaust memory.
 * It records paths, algorithms and sizes. It does not record key material,
@@ -50,6 +55,7 @@ Example:
 from __future__ import annotations
 
 import os
+import stat
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -97,6 +103,12 @@ KIND_PRIVATE_KEY: Final = "private-key"
 KIND_ENCRYPTED_PRIVATE_KEY: Final = "encrypted-private-key"
 KIND_CERTIFICATE: Final = "certificate"
 KIND_CONTAINER: Final = "container"
+KIND_UNREADABLE: Final = "unreadable"
+
+#: Added to the flags of every candidate open: non-blocking, so a FIFO swapped
+#: in after the walk saw a regular file cannot stall the scan; no-follow, so a
+#: link swapped in is not read through. Absent on Windows, which needs neither.
+_SAFE_OPEN_FLAGS: Final = getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
 
 #: PEM banners that indicate a private key protected by a passphrase.
 _ENCRYPTED_BANNERS: Final = (
@@ -476,7 +488,8 @@ def classify(path: Path) -> Finding | None:
 
     Returns:
         A :class:`Finding`, or :data:`None` if the file holds no recognised
-        cryptographic material or cannot be read.
+        cryptographic material or cannot be read. :func:`scan` reports an
+        unreadable file instead of passing over it.
 
     Example:
         >>> import tempfile, pathlib
@@ -486,12 +499,21 @@ def classify(path: Path) -> Finding | None:
         True
     """
     try:
-        with path.open("rb") as handle:
-            blob = handle.read(MAX_CANDIDATE_BYTES)
+        return _classify(path)
     except OSError:
-        # Unreadable files are the norm in a real tree. A scan reports what
-        # it can see rather than failing on the first permission error.
         return None
+
+
+def _safe_opener(path: str, flags: int) -> int:
+    return os.open(path, flags | _SAFE_OPEN_FLAGS)
+
+
+def _classify(path: Path) -> Finding | None:
+    """:func:`classify`, letting a read failure propagate as ``OSError``."""
+    with open(path, "rb", opener=_safe_opener) as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            return None  # Replaced by a FIFO or device since the walk saw it.
+        blob = handle.read(MAX_CANDIDATE_BYTES)
 
     for attempt in (_try_container, _try_private_key, _try_certificate):
         finding = attempt(path, blob)
@@ -500,25 +522,62 @@ def classify(path: Path) -> Finding | None:
     return _try_public_key(path, blob)
 
 
-def _walk(root: Path) -> Iterator[Path]:
+def _unreadable(path: Path, error: OSError, *, directory: bool = False) -> Finding:
+    """A finding for something the scan could not look inside."""
+    reason = error.strerror or type(error).__name__
+    what = "directory could not be listed" if directory else "file could not be read"
+    return Finding(
+        path=path,
+        kind=KIND_UNREADABLE,
+        algorithm=None,
+        key_size=None,
+        quantum_vulnerable=None,
+        deprecated_from=None,
+        disallowed_from=None,
+        replacements=(),
+        detail=(
+            f"This {what} ({reason}), so whether it holds cryptographic "
+            "material is unknown. Rerun with access to it, or review it "
+            "manually."
+        ),
+    )
+
+
+def _walk(root: Path, errors: list[Finding]) -> Iterator[Path]:
     """Yield regular files under ``root``, never following a symbolic link.
 
-    ``follow_symlinks=False`` on the directory check is what keeps a link to
-    ``/`` from turning a scan of one directory into a scan of the filesystem.
+    Iterative, with an explicit stack: ``os.walk`` recurses on Python 3.10
+    and 3.11, so a deep enough tree raised ``RecursionError`` and aborted the
+    whole scan. ``root`` itself is taken as given even if it is a link --
+    the caller named it -- but no link found beneath it is followed.
+
+    Args:
+        root: File or directory to examine.
+        errors: Receives an ``unreadable`` finding for each directory that
+            could not be listed.
     """
-    if root.is_file() and not root.is_symlink():
+    if root.is_file():
         yield root
         return
-    for current, directories, files in os.walk(root, followlinks=False):
-        here = Path(current)
-        # Prune symlinked directories: os.walk would otherwise descend into
-        # them when followlinks is False only for the top level.
-        directories[:] = [d for d in directories if not (here / d).is_symlink()]
-        for name in files:
-            candidate = here / name
-            if candidate.is_symlink() or not candidate.is_file():
-                continue
-            yield candidate
+    if not root.is_dir():
+        return
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        try:
+            with os.scandir(directory) as entries:
+                children = sorted(entries, key=lambda entry: entry.name)
+        except OSError as exc:
+            errors.append(_unreadable(directory, exc, directory=True))
+            continue
+        for entry in reversed(children):
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append(Path(entry.path))
+                elif entry.is_file(follow_symlinks=False):
+                    yield Path(entry.path)
+            except OSError as exc:  # pragma: no cover - entry vanished or EIO
+                errors.append(_unreadable(Path(entry.path), exc))
 
 
 def scan(paths: Iterable[str | os.PathLike[str]]) -> list[Finding]:
@@ -530,7 +589,8 @@ def scan(paths: Iterable[str | os.PathLike[str]]) -> list[Finding]:
 
     Returns:
         Findings, ordered by path so two runs over an unchanged tree produce
-        identical output and a diff is meaningful.
+        identical output and a diff is meaningful. Includes an ``unreadable``
+        finding for every file or directory that could not be read.
 
     Example:
         >>> scan([])
@@ -539,8 +599,11 @@ def scan(paths: Iterable[str | os.PathLike[str]]) -> list[Finding]:
     findings: list[Finding] = []
     for entry in paths:
         root = Path(entry).expanduser()
-        for candidate in _walk(root):
-            finding = classify(candidate)
+        for candidate in _walk(root, findings):
+            try:
+                finding = _classify(candidate)
+            except OSError as exc:
+                finding = _unreadable(candidate, exc)
             if finding is not None:
                 findings.append(finding)
     return sorted(findings, key=lambda f: str(f.path))
