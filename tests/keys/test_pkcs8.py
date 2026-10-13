@@ -250,3 +250,192 @@ class TestNonPbes2Keys:
         start = bytes(der).find(pbes2)
         der[start + len(pbes2) - 1] ^= 0x01  # PBES1-style: same length, other OID
         assert _pkcs8.pbkdf2_iterations(bytes(der)) is None
+
+
+def _scrypt_pkcs8(  # noqa: PLR0913 - one argument per RFC 7914 parameter
+    cost: int,
+    block_size: int,
+    parallelization: int,
+    *,
+    key_length: int | None = None,
+    real: bool = True,
+    passphrase: bytes = PASSPHRASE,
+) -> bytes:
+    """An RFC 7914 section 7.1 scrypt ``EncryptedPrivateKeyInfo``.
+
+    ``cryptography`` cannot write one, so it is assembled here as OpenSSL's
+    ``pkcs8 -topk8 -scrypt`` does. With ``real`` the ciphertext is a genuine
+    encryption of an Ed25519 key, which costs one derivation; without it the
+    ciphertext is random, for parameters too expensive to derive in a test.
+    """
+    import os
+
+    from cryptography.hazmat.primitives import padding
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
+
+    salt, iv = os.urandom(16), os.urandom(16)
+    if real:
+        plain = _key("ed25519").private_bytes(
+            serialization.Encoding.DER,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+        key = Scrypt(
+            salt=salt, length=32, n=cost, r=block_size, p=parallelization
+        ).derive(passphrase)
+        padder = padding.PKCS7(128).padder()
+        padded = padder.update(plain) + padder.finalize()
+        encryptor = Cipher(algorithms.AES(key), modes.CBC(iv)).encryptor()
+        ciphertext = encryptor.update(padded) + encryptor.finalize()
+    else:
+        ciphertext = os.urandom(64)
+    fields = [
+        _pkcs8._tlv(_pkcs8._TAG_OCTETS, salt),
+        _pkcs8._integer(cost),
+        _pkcs8._integer(block_size),
+        _pkcs8._integer(parallelization),
+    ]
+    if key_length is not None:
+        fields.append(_pkcs8._integer(key_length))
+    kdf = _pkcs8._sequence(_pkcs8._oid(_pkcs8._OID_SCRYPT), _pkcs8._sequence(*fields))
+    scheme = _pkcs8._sequence(
+        _pkcs8._oid(_pkcs8._OID_AES256_CBC), _pkcs8._tlv(_pkcs8._TAG_OCTETS, iv)
+    )
+    algorithm = _pkcs8._sequence(
+        _pkcs8._oid(_pkcs8._OID_PBES2), _pkcs8._sequence(kdf, scheme)
+    )
+    return _pkcs8._sequence(algorithm, _pkcs8._tlv(_pkcs8._TAG_OCTETS, ciphertext))
+
+
+def _no_derivation(monkeypatch):
+    """Fail the test if a decryption -- and so a derivation -- is attempted."""
+    from encryption_helper.keys import load
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("the key derivation ran")
+
+    for name in ("load_pem_private_key", "load_der_private_key"):
+        monkeypatch.setattr(load.serialization, name, forbidden)
+
+
+# The measured abusive cases, plus one over each cap on its own.
+_ABUSIVE_SCRYPT = [
+    pytest.param(2**14, 8, 1000, id="p=1000"),
+    pytest.param(2**16, 1024, 1, id="r=1024"),
+    pytest.param(2**21, 8, 1, id="N=2**21"),
+    pytest.param(2**20, 9, 1, id="N*r-just-over"),
+    pytest.param(2**14, 8, 65, id="work-just-over"),
+]
+
+
+class TestScryptCostCeiling:
+    """scrypt's cost is read from the file too, so it needs a ceiling.
+
+    Before, only PBKDF2 was checked: N=2**14, r=8, p=1000 cost 17 s per load
+    even with a wrong passphrase, and N=2**16, r=1024 cost 11 s and 8 GiB.
+    """
+
+    @pytest.mark.parametrize(("n", "r", "p"), _ABUSIVE_SCRYPT)
+    @pytest.mark.parametrize("pem", [False, True], ids=["der", "pem"])
+    def test_excessive_parameters_are_refused_before_deriving(
+        self, monkeypatch, n, r, p, pem
+    ):
+        import time
+
+        der = _scrypt_pkcs8(n, r, p, real=False)
+        blob = _pkcs8.to_pem(der) if pem else der
+        _no_derivation(monkeypatch)
+        started = time.perf_counter()
+        with pytest.raises(KeyReadError, match="scrypt N="):
+            load_private_key(blob, passphrase=b"wrong")
+        assert time.perf_counter() - started < 0.5
+
+    @pytest.mark.parametrize("key_length", [None, 32])
+    def test_openssl_default_parameters_load(self, key_length):
+        """``openssl pkcs8 -scrypt`` writes N=16384, r=8, p=1."""
+        der = _scrypt_pkcs8(2**14, 8, 1, key_length=key_length)
+        assert _pkcs8.scrypt_parameters(der) == (2**14, 8, 1)
+        key = load_private_key(_pkcs8.to_pem(der), passphrase=PASSPHRASE)
+        assert type(key).__name__ == "Ed25519PrivateKey"
+        with pytest.raises(KeyReadError, match="Could not load"):
+            load_private_key(der, passphrase=b"wrong")
+
+    @pytest.mark.parametrize(
+        ("n", "r", "p"), [(2**20, 8, 1), (2**14, 8, 64), (2**13, 128, 1)]
+    )
+    def test_keys_at_the_ceiling_are_parsed_not_refused(self, monkeypatch, n, r, p):
+        """At the caps the check passes; only the derivation is stubbed."""
+        der = _scrypt_pkcs8(n, r, p, real=False)
+        _no_derivation(monkeypatch)
+        with pytest.raises(pytest.fail.Exception, match="derivation ran"):
+            load_private_key(der, passphrase=PASSPHRASE)
+
+    def test_memory_is_capped_on_its_own(self, monkeypatch):
+        """Implied by the work cap today; enforced in case that is raised."""
+        monkeypatch.setattr(_pkcs8, "MAX_SCRYPT_WORK", 2**40)
+        der = _scrypt_pkcs8(2**20, 9, 1, real=False)
+        _no_derivation(monkeypatch)
+        with pytest.raises(KeyReadError, match="scrypt N="):
+            load_private_key(der, passphrase=PASSPHRASE)
+
+    def test_the_caps_admit_the_strong_common_choice_exactly(self):
+        strong = _pkcs8.ScryptParameters(2**20, 8, 1)
+        assert strong.work == _pkcs8.MAX_SCRYPT_WORK
+        assert strong.memory == _pkcs8.MAX_SCRYPT_MEMORY
+
+    def test_no_passphrase_means_no_check(self):
+        der = _scrypt_pkcs8(2**14, 8, 1000, real=False)
+        with pytest.raises(KeyReadError, match="no passphrase was supplied"):
+            load_private_key(der)
+
+
+class TestScryptReaderNeverBreaksLoading:
+    """Unparseable scrypt parameters fall through to ``cryptography``."""
+
+    def _fields(self, *values: bytes) -> bytes:
+        # A scrypt key whose parameter fields are exactly ``values``.
+        kdf = _pkcs8._sequence(
+            _pkcs8._oid(_pkcs8._OID_SCRYPT), _pkcs8._sequence(*values)
+        )
+        scheme = _pkcs8._sequence(
+            _pkcs8._oid(_pkcs8._OID_AES256_CBC),
+            _pkcs8._tlv(_pkcs8._TAG_OCTETS, b"i" * 16),
+        )
+        algorithm = _pkcs8._sequence(
+            _pkcs8._oid(_pkcs8._OID_PBES2), _pkcs8._sequence(kdf, scheme)
+        )
+        return _pkcs8._sequence(algorithm, _pkcs8._tlv(_pkcs8._TAG_OCTETS, b"c" * 64))
+
+    @pytest.mark.parametrize("cut", [0, 1, 3, 10, 40, 60])
+    def test_truncated_input(self, cut):
+        der = _scrypt_pkcs8(2**14, 8, 1000, real=False)
+        assert _pkcs8.scrypt_parameters(der[:cut]) is None
+
+    def test_pbkdf2_and_unencrypted_keys_are_not_scrypt(self):
+        strong = encode_private_key(_key("ed25519"), fmt="der", passphrase=PASSPHRASE)
+        plain = encode_private_key(_key("ed25519"), fmt="der")
+        assert _pkcs8.scrypt_parameters(strong) is None
+        assert _pkcs8.scrypt_parameters(plain) is None
+        assert _pkcs8.pbkdf2_iterations(_scrypt_pkcs8(2**14, 8, 1, real=False)) is None
+
+    def test_salt_that_is_not_an_octet_string(self):
+        integer = _pkcs8._integer
+        der = self._fields(integer(1), integer(2**14), integer(8), integer(1))
+        assert _pkcs8.scrypt_parameters(der) is None
+
+    @pytest.mark.parametrize(
+        "bad", [b"\x04\x01\x10", b"\x02\x01\xff", b"\x02\x01\x00", b"\x02\x00"]
+    )
+    def test_a_parameter_that_is_not_a_positive_integer(self, bad):
+        salt = _pkcs8._tlv(_pkcs8._TAG_OCTETS, b"s" * 16)
+        integer = _pkcs8._integer
+        for position in range(3):
+            fields = [integer(2**14), integer(8), integer(1000)]
+            fields[position] = bad
+            assert _pkcs8.scrypt_parameters(self._fields(salt, *fields)) is None
+
+    def test_missing_parameters(self):
+        salt = _pkcs8._tlv(_pkcs8._TAG_OCTETS, b"s" * 16)
+        der = self._fields(salt, _pkcs8._integer(2**14))
+        assert _pkcs8.scrypt_parameters(der) is None

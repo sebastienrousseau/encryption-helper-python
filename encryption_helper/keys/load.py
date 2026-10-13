@@ -9,6 +9,17 @@ which it is, and translate the underlying library's exceptions into
 Error messages here deliberately do not distinguish "wrong passphrase" from
 "corrupt file". Both mean the same thing to a legitimate caller, and the
 distinction is only useful to someone probing a key they should not have.
+
+A key's derivation cost is read from the file, so before any passphrase is
+tried the stored cost -- PBKDF2 iterations, scrypt N/r/p, bcrypt rounds -- is
+checked against a ceiling; a crafted key cannot make its loader spend
+minutes or gigabytes on a single attempt.
+
+The passphrase, the key derived from it and the decrypted DER are immutable
+:class:`bytes` (inside ``cryptography`` as well as here) and cannot be
+zeroised from Python. They linger in process memory until it is reused, and
+so in any core dump or swap. Callers handling high-value keys should keep the
+process short-lived and disable core dumps where they can.
 """
 
 from __future__ import annotations
@@ -147,6 +158,18 @@ def _refuse_excessive_kdf_cost(data: bytes) -> None:
         msg = (
             f"The private key asks for {iterations} PBKDF2 iterations, more "
             f"than the {_pkcs8.MAX_ITERATIONS} this package will run."
+        )
+        raise KeyReadError(msg)
+    scrypt = _pkcs8.scrypt_parameters(der) if der is not None else None
+    if scrypt is not None and (
+        scrypt.work > _pkcs8.MAX_SCRYPT_WORK or scrypt.memory > _pkcs8.MAX_SCRYPT_MEMORY
+    ):
+        msg = (
+            f"The private key asks for scrypt N={scrypt.cost}, "
+            f"r={scrypt.block_size}, p={scrypt.parallelization}, more than "
+            f"this package will run (N*r*p at most {_pkcs8.MAX_SCRYPT_WORK}, "
+            f"128*N*r at most {_pkcs8.MAX_SCRYPT_MEMORY} bytes). Re-protect "
+            "it with lower parameters."
         )
         raise KeyReadError(msg)
 

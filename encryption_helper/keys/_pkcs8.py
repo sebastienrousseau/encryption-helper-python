@@ -20,13 +20,26 @@ Why PBKDF2 and not scrypt: both load in ``cryptography``. But OpenSSL caps
 scrypt at 32 MiB by default, below what a recommended scrypt cost needs, so
 ``openssl pkey`` -- and Java, which lacks scrypt PBES2 -- could not open the
 file. A key a counterparty's tooling cannot read is not protected, it is lost.
+
+Reading is another matter: a key protected elsewhere may use either KDF, and
+both take their cost from the file. :func:`pbkdf2_iterations` and
+:func:`scrypt_parameters` read that cost so the loader can refuse an absurd
+one before any derivation runs (see :data:`MAX_ITERATIONS`,
+:data:`MAX_SCRYPT_WORK` and :data:`MAX_SCRYPT_MEMORY`).
+
+Secrets in memory: the passphrase, the derived key and the plaintext DER are
+all immutable :class:`bytes`. Python offers no way to overwrite them, and the
+interpreter may copy them, so they cannot be zeroised; they persist until the
+garbage collector reuses the memory. Callers handling high-value keys should
+keep the process short-lived and disable core dumps (``ulimit -c 0``,
+``prctl(PR_SET_DUMPABLE, 0)``) and swap where they can.
 """
 
 from __future__ import annotations
 
 import base64
 import os
-from typing import Final
+from typing import Final, NamedTuple
 
 from cryptography.hazmat.primitives import hashes, padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -45,12 +58,30 @@ WEAK_ITERATIONS_BELOW: Final = 100_000
 #: Ten million is more than sixteen times what this package writes.
 MAX_ITERATIONS: Final = 10_000_000
 
+#: scrypt work (N * r * p, in units of one BlockMix of 128 * r bytes) above
+#: which a key is refused before derivation. scrypt's cost is also read from
+#: the file, and unlike PBKDF2 it has two dimensions: a wrong passphrase on
+#: N=2**14, r=8, p=1000 cost 17 s of CPU, and N=2**16, r=1024 cost 11 s and
+#: 8 GiB. 2**23 is exactly N=2**20, r=8, p=1 -- the strongest parameters in
+#: common use (the scrypt paper's file-encryption figure), about 1.5 s here
+#: -- and 64 times OpenSSL's ``pkcs8 -scrypt`` default of N=16384, r=8, p=1.
+MAX_SCRYPT_WORK: Final = 2**23
+
+#: scrypt memory (128 * N * r bytes) above which a key is refused. 1 GiB is
+#: what N=2**20, r=8 needs; anything beyond it is a request to exhaust the
+#: loader's memory, not a protection anyone's tooling writes by default.
+#: With p >= 1 the work cap already implies this one (memory <= 128 * work);
+#: it is checked separately so that raising the work cap -- say, for large p
+#: -- can never quietly admit a key that needs gigabytes.
+MAX_SCRYPT_MEMORY: Final = 2**30
+
 _SALT_SIZE: Final = 16
 _IV_SIZE: Final = 16
 _KEY_SIZE: Final = 32
 
 _OID_PBES2: Final = "1.2.840.113549.1.5.13"
 _OID_PBKDF2: Final = "1.2.840.113549.1.5.12"
+_OID_SCRYPT: Final = "1.3.6.1.4.1.11591.4.11"
 _OID_HMAC_SHA256: Final = "1.2.840.113549.2.9"
 _OID_AES256_CBC: Final = "2.16.840.1.101.3.4.1.42"
 
@@ -148,7 +179,7 @@ def to_pem(der: bytes) -> bytes:
     ).encode("ascii")
 
 
-# --- Reading back only the iteration count, for the weak-key warning -------
+# --- Reading back the KDF cost, for the warning and the ceiling ------------
 
 
 def der_from_pem(data: bytes) -> bytes | None:
@@ -191,26 +222,69 @@ def _read(data: bytes, offset: int) -> tuple[int, bytes, int]:
     return tag, data[offset:end], end
 
 
+class ScryptParameters(NamedTuple):
+    """The cost parameters of a scrypt-protected key (RFC 7914 section 7.1)."""
+
+    cost: int
+    block_size: int
+    parallelization: int
+
+    @property
+    def work(self) -> int:
+        """``N * r * p``: what one derivation costs in CPU, linearly."""
+        return self.cost * self.block_size * self.parallelization
+
+    @property
+    def memory(self) -> int:
+        """``128 * N * r``: the bytes one derivation must hold at once."""
+        return 128 * self.cost * self.block_size
+
+
+def _kdf_parameters(der: bytes, kdf_oid: str) -> bytes | None:
+    """Return the PBES2 KDF parameters body if the KDF is ``kdf_oid``.
+
+    Raises:
+        ValueError: On any malformed or truncated encoding.
+    """
+    _, outer, _ = _read(der, 0)
+    _, algorithm, _ = _read(outer, 0)
+    _, scheme_oid, after = _read(algorithm, 0)
+    if scheme_oid != _oid(_OID_PBES2)[2:]:
+        return None
+    _, params, _ = _read(algorithm, after)
+    _, kdf, _ = _read(params, 0)
+    _, found_oid, after = _read(kdf, 0)
+    if found_oid != _oid(kdf_oid)[2:]:
+        return None
+    _, kdf_params, _ = _read(kdf, after)
+    return kdf_params
+
+
+def _positive_integer(data: bytes, offset: int) -> tuple[int | None, int]:
+    """Read an INTEGER; :data:`None` if it is another type or not positive.
+
+    Raises:
+        ValueError: On any malformed or truncated encoding.
+    """
+    tag, body, after = _read(data, offset)
+    if tag != _TAG_INTEGER or not body:
+        return None, after
+    value = int.from_bytes(body, "big", signed=True)
+    return (value if value > 0 else None), after
+
+
 def pbkdf2_iterations(der: bytes) -> int | None:
     """Return the PBKDF2 iteration count protecting a PKCS#8 key, if any.
 
-    Only to warn about weak protection. Returns :data:`None` for anything
-    that is not PBES2 with PBKDF2 -- an unencrypted key, scrypt, or input it
-    cannot parse -- rather than raising: loading the key is the loader's job,
-    and this must never be the reason a valid key fails to load.
+    Feeds the weak-key warning and the cost ceiling. Returns :data:`None` for
+    anything that is not PBES2 with PBKDF2 -- an unencrypted key, scrypt, or
+    input it cannot parse -- rather than raising: loading the key is the
+    loader's job, and this must never be the reason a valid key fails to load.
     """
     try:
-        _, outer, _ = _read(der, 0)
-        _, algorithm, _ = _read(outer, 0)
-        _, scheme_oid, after = _read(algorithm, 0)
-        if scheme_oid != _oid(_OID_PBES2)[2:]:
+        kdf_params = _kdf_parameters(der, _OID_PBKDF2)
+        if kdf_params is None:
             return None
-        _, params, _ = _read(algorithm, after)
-        _, kdf, _ = _read(params, 0)
-        _, kdf_oid, after = _read(kdf, 0)
-        if kdf_oid != _oid(_OID_PBKDF2)[2:]:
-            return None
-        _, kdf_params, _ = _read(kdf, after)
         _, _salt, after = _read(kdf_params, 0)
         tag, count, _ = _read(kdf_params, after)
     except ValueError:
@@ -218,3 +292,29 @@ def pbkdf2_iterations(der: bytes) -> int | None:
     if tag != _TAG_INTEGER:
         return None
     return int.from_bytes(count, "big")
+
+
+def scrypt_parameters(der: bytes) -> ScryptParameters | None:
+    """Return the scrypt cost parameters protecting a PKCS#8 key, if any.
+
+    Feeds the cost ceiling only. Like :func:`pbkdf2_iterations` it answers
+    :data:`None` -- never raises -- for anything that is not PBES2 with scrypt
+    or that it cannot parse, including a parameter that is not a positive
+    INTEGER: ``cryptography`` rejects such a key itself, and this must never
+    be the reason a key it accepts fails to load.
+    """
+    try:
+        kdf_params = _kdf_parameters(der, _OID_SCRYPT)
+        if kdf_params is None:
+            return None
+        tag, _salt, after = _read(kdf_params, 0)
+        if tag != _TAG_OCTETS:
+            return None
+        cost, after = _positive_integer(kdf_params, after)
+        block_size, after = _positive_integer(kdf_params, after)
+        parallelization, _ = _positive_integer(kdf_params, after)
+    except ValueError:
+        return None
+    if cost is None or block_size is None or parallelization is None:
+        return None
+    return ScryptParameters(cost, block_size, parallelization)
