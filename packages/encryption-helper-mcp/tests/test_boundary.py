@@ -135,6 +135,44 @@ class TestPathConfinement:
         with pytest.raises(ToolError, match="outside the permitted root"):
             call(root.resolve(), "scan_directory", {"path": "escape"})
 
+    def test_the_refusal_says_nothing_about_what_exists_outside(self, tmp_path):
+        """Confinement is decided before the filesystem outside is consulted.
+
+        Resolving strictly first answered "No such file", "Permission denied"
+        or "outside the permitted root" depending on what lay outside the
+        root, so a model could probe the host one path at a time.
+        """
+        root = tmp_path / "root"
+        root.mkdir()
+        present = tmp_path / "present.pem"
+        present.write_text("x")
+        absent = tmp_path / "absent.pem"
+        messages = set()
+        for candidate in (present, absent, tmp_path / "no" / "such" / "dir"):
+            with pytest.raises(ToolError) as caught:
+                call(root.resolve(), "inspect_container", {"path": str(candidate)})
+            messages.add(str(caught.value).replace(str(candidate), "<path>"))
+        assert len(messages) == 1, messages
+        (message,) = messages
+        assert "outside the permitted root" in message
+
+    def test_a_home_relative_path_is_not_expanded(self, tmp_path):
+        """``~`` is an ordinary name inside the root, never the user's home."""
+        with pytest.raises(ToolError) as caught:
+            call(tmp_path.resolve(), "scan_directory", {"path": "~"})
+        assert "outside the permitted root" not in str(caught.value)
+        assert "No such file" in str(caught.value)
+
+    @pytest.mark.parametrize("path", [["x"], 7, {"a": 1}, None])
+    def test_a_path_that_is_not_a_string_is_refused(self, tmp_path, path):
+        """It was passed through ``str()``, so ``["x"]`` named a file "['x']"."""
+        with pytest.raises(ToolError, match="must be a string"):
+            call(tmp_path.resolve(), "inspect_container", {"path": path})
+
+    def test_a_nul_byte_is_a_tool_error_not_an_internal_error(self, tmp_path):
+        with pytest.raises(ToolError, match="NUL"):
+            call(tmp_path.resolve(), "inspect_container", {"path": "a\x00b"})
+
     def test_the_root_itself_is_permitted(self, tmp_path):
         root = tmp_path.resolve()
         result = call(root, "scan_directory", {"path": "."})

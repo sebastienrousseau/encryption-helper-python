@@ -82,12 +82,42 @@ class Tool:
     handler: Callable[[Path, dict[str, Any]], dict[str, Any]]
 
 
+def _path_argument(arguments: dict[str, Any], default: str) -> str:
+    """Return the ``path`` argument, refusing anything that is not a plain path.
+
+    A non-string used to be passed through ``str()``, so ``["x"]`` named a
+    file called ``['x']``; a NUL byte reached ``lstat`` and surfaced as an
+    internal error rather than as a mistake the caller can correct.
+    """
+    value = arguments.get("path", default)
+    if not isinstance(value, str):
+        msg = f"'path' must be a string, not {type(value).__name__}."
+        raise ToolError(msg)
+    if "\x00" in value:
+        msg = "'path' cannot contain a NUL character."
+        raise ToolError(msg)
+    return value
+
+
+def _outside(candidate: str, root: Path) -> ToolError:
+    return ToolError(
+        f"{candidate} resolves outside the permitted root {root}. "
+        "This server only reads inside the directory it was started with; "
+        "restart it with --root to widen that."
+    )
+
+
 def _resolve_within(root: Path, candidate: str) -> Path:
     """Resolve ``candidate`` and confirm it lies inside ``root``.
 
-    Resolution is deliberate and happens first: a symbolic link inside the
-    root pointing at ``/etc`` resolves outside the root and is then rejected,
-    whereas checking the unresolved path would have admitted it.
+    Confinement is decided first, by a resolution that follows every link
+    that exists but does not require the target to: a symbolic link inside
+    the root pointing at ``/etc`` resolves outside and is rejected. Only a
+    path already known to be inside is then checked for existence, so the
+    answer for a path outside the root is the same whether it exists, is
+    missing or is unreadable. Resolving strictly first let a model tell
+    those apart and probe the host one path at a time. ``~`` is not
+    expanded: here it is an ordinary name inside the root.
 
     Args:
         root: Directory the server is confined to.
@@ -102,20 +132,22 @@ def _resolve_within(root: Path, candidate: str) -> Path:
     if not candidate:
         msg = "A path is required."
         raise ToolError(msg)
-    requested = Path(candidate).expanduser()
+    requested = Path(candidate)
     base = requested if requested.is_absolute() else root / requested
+    try:
+        lexical = base.resolve(strict=False)
+    except (OSError, RuntimeError) as exc:  # a link loop, before 3.13
+        raise _outside(candidate, root) from exc
+    if lexical != root and root not in lexical.parents:
+        raise _outside(candidate, root)
     try:
         target = base.resolve(strict=True)
     except OSError as exc:
         msg = f"{candidate}: {exc.strerror or 'cannot be read'}."
         raise ToolError(msg) from exc
+    # A link inside the root can be repointed between the two resolutions.
     if target != root and root not in target.parents:
-        msg = (
-            f"{candidate} resolves outside the permitted root {root}. "
-            "This server only reads inside the directory it was started with; "
-            "restart it with --root to widen that."
-        )
-        raise ToolError(msg)
+        raise _outside(candidate, root)
     return target
 
 
@@ -184,7 +216,7 @@ def _algorithm_inventory(_root: Path, _arguments: dict[str, Any]) -> dict[str, A
 
 def _inspect_container(root: Path, arguments: dict[str, Any]) -> dict[str, Any]:
     """Describe an encrypted file from its header."""
-    path = _resolve_within(root, str(arguments.get("path", "")))
+    path = _resolve_within(root, _path_argument(arguments, ""))
     # Only the header is wanted, so a container of any size is acceptable.
     header = _read_regular_file(path, HEADER_SIZE, prefix=True)
     try:
@@ -196,7 +228,7 @@ def _inspect_container(root: Path, arguments: dict[str, Any]) -> dict[str, Any]:
 
 def _scan_directory(root: Path, arguments: dict[str, Any]) -> dict[str, Any]:
     """Inventory cryptographic material under a path."""
-    path = _resolve_within(root, str(arguments.get("path", ".")))
+    path = _resolve_within(root, _path_argument(arguments, "."))
     limit = arguments.get("limit", DEFAULT_SCAN_LIMIT)
     if (
         not isinstance(limit, int)
@@ -217,7 +249,7 @@ def _scan_directory(root: Path, arguments: dict[str, Any]) -> dict[str, Any]:
 
 def _fingerprint_public_key(root: Path, arguments: dict[str, Any]) -> dict[str, Any]:
     """Return the fingerprint of a public key file."""
-    path = _resolve_within(root, str(arguments.get("path", "")))
+    path = _resolve_within(root, _path_argument(arguments, ""))
     try:
         key = load_public_key(_read_regular_file(path, MAX_KEY_FILE_BYTES))
     except EncryptionHelperError as exc:
