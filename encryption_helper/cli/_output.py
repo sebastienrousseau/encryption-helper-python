@@ -8,6 +8,7 @@ import argparse
 import json
 import logging
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, NoReturn
 
@@ -89,6 +90,17 @@ def record_output_mode(args: argparse.Namespace) -> None:
     _mode.command = getattr(args, "command", None)
 
 
+def begin_output_mode(*, json: bool) -> None:
+    """Record the output mode known before parsing: ``--json``, no command.
+
+    Called first in :func:`~._main.main`, so an argument error is reported
+    in the requested format, and so nothing from a previous invocation in
+    the same process is still in effect while this one parses.
+    """
+    _mode.json = json
+    _mode.command = None
+
+
 def runtime_version() -> str:
     """Return the installed distribution version, or a placeholder.
 
@@ -121,6 +133,43 @@ def envelope(
     }
     document["result" if status == "ok" else "error"] = body
     return document
+
+
+def json_requested(argv: Sequence[str]) -> bool:
+    """Whether ``--json`` appears among the options, before any parsing.
+
+    Parsing is what fails on a usage error, so the output mode it would
+    have produced is not available when that error is reported. Scanning
+    the raw arguments is the only way to honour ``--json`` there. Tokens
+    after ``--`` are operands, not options, so they are not consulted.
+    """
+    for arg in argv:
+        if arg == "--":
+            return False
+        if arg == "--json":
+            return True
+    return False
+
+
+class JsonAwareParser(argparse.ArgumentParser):
+    """An argument parser whose usage errors follow ``--json``.
+
+    argparse prints its usage line and message as plain text and exits 2.
+    Without ``--json`` that is kept exactly; with it, the same message is
+    reported through :func:`emit_error` as the documented error document, so
+    automation can branch on ``error.code`` for every failure rather than
+    special-casing the ones argparse catches. Subparsers inherit the class,
+    because ``add_subparsers`` defaults to the parent's type.
+    """
+
+    def error(self, message: str) -> NoReturn:
+        """Report a parse failure, as JSON when that was requested."""
+        if not _mode.json:
+            super().error(message)
+        # A subparser's prog is "<root> <command>"; naming the command lets
+        # a consumer tell which invocation failed. The root parser has none.
+        _mode.command = self.prog.partition(" ")[2] or None
+        _fail_usage(message)
 
 
 def _write_json(document: dict[str, Any], stream: Any) -> None:

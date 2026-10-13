@@ -18,6 +18,7 @@ import contextlib
 import logging
 import os
 import signal
+import sys
 import threading
 from collections.abc import Iterator, Sequence
 from types import FrameType
@@ -36,7 +37,9 @@ from ._constants import (
 )
 from ._output import (
     _configure_logging,
+    begin_output_mode,
     emit_error,
+    json_requested,
     record_output_mode,
 )
 from ._parser import build_parser
@@ -122,8 +125,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     Returns:
         A process exit code. See the module docstring for their meanings.
     """
+    arguments = sys.argv[1:] if argv is None else list(argv)
+    # Known before parsing, so a usage error argparse raises is reported in
+    # the requested format too; see JsonAwareParser.
+    begin_output_mode(json=json_requested(arguments))
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(arguments)
     record_output_mode(args)
     _configure_logging(args)
 

@@ -16,6 +16,8 @@ two sets of names.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -197,3 +199,91 @@ class TestStreamSeparation:
         # on stderr and must still parse as JSON.
         assert captured.out.startswith(b"EHEV")
         assert result_of(captured.err.decode())["bytes"] == 7
+
+
+class TestUsageErrorsHonourJson:
+    """A ``--json`` caller gets a JSON error for every failure, usage included.
+
+    Argument errors were printed as argparse's plain usage text, because
+    parsing ran before the output mode was known, and the keygen passphrase
+    refusal printed its own text. Automation branching on ``error.code`` had
+    to special-case both.
+    """
+
+    def _single_error(self, stderr: str, schema: dict) -> dict:
+        """Assert stderr is exactly one error document, and return it."""
+        document = envelope(stderr)  # json.loads rejects trailing text.
+        assert document["status"] == "error"
+        error = document["error"]
+        assert set(schema["properties"]["error"]["required"]) <= set(error)
+        assert error["code"] == "usage"
+        assert error["exit_code"] == 2
+        return document
+
+    def test_an_invalid_choice_is_a_json_error(self, schema, capsys):
+        with pytest.raises(SystemExit) as raised:
+            main(["--json", "keygen", "--algorithm", "bogus"])
+        assert raised.value.code == 2
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        document = self._single_error(captured.err, schema)
+        assert "bogus" in document["error"]["message"]
+        assert document["command"] == "keygen"
+
+    def test_a_missing_subcommand_is_a_json_error(self, schema, capsys):
+        with pytest.raises(SystemExit) as raised:
+            main(["--json"])
+        assert raised.value.code == 2
+        document = self._single_error(capsys.readouterr().err, schema)
+        # The schema allows null exactly here: no subcommand was identified.
+        assert document["command"] is None
+
+    def test_without_json_argparse_output_is_unchanged(self, capsys):
+        with pytest.raises(SystemExit) as raised:
+            main(["keygen", "--algorithm", "bogus"])
+        assert raised.value.code == 2
+        err = capsys.readouterr().err
+        assert err.startswith("usage: encryption-helper keygen ")
+        assert "encryption-helper keygen: error: argument --algorithm: invalid" in err
+
+    def test_a_missing_passphrase_source_is_a_json_error(self, tmp_path, schema):
+        """The non-interactive keygen refusal, exactly as a pipeline sees it."""
+        result = subprocess.run(  # noqa: S603
+            [
+                sys.executable,
+                "-m",
+                "encryption_helper",
+                "--json",
+                "keygen",
+                "--algorithm",
+                "x25519",
+                "--out-dir",
+                str(tmp_path),
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 2
+        assert result.stdout == ""
+        document = self._single_error(result.stderr, schema)
+        assert document["command"] == "keygen"
+        assert "--no-passphrase" in document["error"]["message"]
+        assert not (tmp_path / "key.pem").exists()
+
+    def test_the_passphrase_refusal_text_is_unchanged_without_json(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "encryption_helper.cli._passphrase._interactive", lambda: False
+        )
+        with pytest.raises(SystemExit) as raised:
+            main(["keygen", "--algorithm", "x25519", "--out-dir", str(tmp_path)])
+        assert raised.value.code == 2
+        assert capsys.readouterr().err == (
+            "error: refusing to write an unencrypted private key by default.\n"
+            "  Supply a passphrase with --passphrase-env VAR or "
+            "--passphrase-file PATH,\n"
+            "  or pass --no-passphrase to store the key unencrypted on purpose.\n"
+        )

@@ -32,7 +32,7 @@ from ._commands import (
     _cmd_verify,
 )
 from ._constants import _LOG_LEVELS, _STDIO, DEFAULT_MAX_INPUT_BYTES
-from ._output import _VersionAction
+from ._output import JsonAwareParser, _VersionAction
 
 
 def _positive_size(text: str) -> int:
@@ -169,7 +169,7 @@ if TYPE_CHECKING:
     # at runtime raises TypeError. Aliasing it here keeps the annotation
     # precise in all ten builders without a runtime cost, because
     # `from __future__ import annotations` leaves them unevaluated.
-    _SubParsers = argparse._SubParsersAction[argparse.ArgumentParser]
+    _SubParsers = argparse._SubParsersAction[JsonAwareParser]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -178,7 +178,7 @@ def build_parser() -> argparse.ArgumentParser:
     Returns:
         The configured parser.
     """
-    parser = argparse.ArgumentParser(
+    parser = JsonAwareParser(
         prog="encryption-helper",
         description=(
             "Generate, protect and use asymmetric key pairs. Private keys are "

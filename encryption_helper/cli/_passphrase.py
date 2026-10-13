@@ -29,7 +29,7 @@ from ..errors import (
 from ..keys import (
     load_private_key_file,
 )
-from ._constants import EXIT_USAGE, MAX_PASSPHRASE_FILE_BYTES
+from ._constants import MAX_PASSPHRASE_FILE_BYTES
 from ._output import _fail_usage
 
 logger = logging.getLogger(__name__)
@@ -249,17 +249,36 @@ def _new_key_passphrase(args: argparse.Namespace) -> bytes | None:
     if supplied is not None:
         return supplied
 
-    if _interactive():
-        return _prompt_new_passphrase()
+    _require_new_key_protection(args)
+    return _prompt_new_passphrase()
 
-    print(
-        "error: refusing to write an unencrypted private key by default.\n"
+
+def _require_new_key_protection(args: argparse.Namespace) -> None:
+    """Refuse up front when a new key's protection cannot be decided.
+
+    That is: no ``--no-passphrase``, no passphrase source, and nobody at a
+    terminal to ask. :func:`_cmd_keygen` calls this before printing any
+    advisory note, so a non-interactive caller -- in particular one using
+    ``--json`` -- gets the refusal as the only thing on stderr. It goes
+    through :func:`_fail_usage` so ``--json`` gets the error document
+    rather than free text; the plain-text wording is unchanged.
+
+    Raises:
+        SystemExit: With :data:`EXIT_USAGE` if the decision cannot be made.
+    """
+    if (
+        args.no_passphrase
+        or getattr(args, "unlock_env", None)
+        or getattr(args, "unlock_file", None)
+        or _interactive()
+    ):
+        return
+    _fail_usage(
+        "refusing to write an unencrypted private key by default.\n"
         "  Supply a passphrase with --passphrase-env VAR or "
         "--passphrase-file PATH,\n"
-        "  or pass --no-passphrase to store the key unencrypted on purpose.",
-        file=sys.stderr,
+        "  or pass --no-passphrase to store the key unencrypted on purpose."
     )
-    raise SystemExit(EXIT_USAGE)
 
 
 def _existing_key_passphrase(args: argparse.Namespace) -> bytes | None:

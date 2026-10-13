@@ -64,6 +64,7 @@ from ._passphrase import (
     _load_private_key,
     _load_private_key_and_passphrase,
     _new_key_passphrase,
+    _require_new_key_protection,
 )
 from ._progress import _make_progress
 from ._streams import (
@@ -204,6 +205,9 @@ def _cmd_keygen(args: argparse.Namespace) -> int:
     out_dir = resolve_destination(args.out_dir)
     _warn_if_inside_git_worktree(out_dir)
 
+    # Refuse before advising: a caller that cannot answer a prompt should
+    # see the refusal alone, not a note about an algorithm it will not get.
+    _require_new_key_protection(args)
     _warn_if_quantum_vulnerable(args, args.algorithm)
     passphrase = _new_key_passphrase(args)
     key = generate(
