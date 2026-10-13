@@ -14,6 +14,10 @@ land in a directory other users can write to, refuses to clobber an existing
 file unless explicitly told to, backs up anything it does replace, and writes
 atomically so an interrupted run cannot leave a truncated key behind.
 
+Reading is the mirror image. :func:`read_bytes` serves the CLI, which must
+accept ``--in <(cmd)`` and so opens FIFOs blocking; :func:`read_regular_file`
+serves code that reads paths it did not choose, and refuses anything but a
+regular file without ever blocking on one.
 
 .. note::
    POSIX permission bits are enforced directly. On Windows they are not: a
@@ -36,14 +40,16 @@ from pathlib import Path
 from typing import IO, NamedTuple
 
 from . import _platform
-from .errors import KeyExistsError, KeyReadError, KeyWriteError
+from .errors import InvalidArgumentError, KeyExistsError, KeyReadError, KeyWriteError
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "InputTooLargeError",
+    "NotRegularFileError",
     "WriteOutcome",
     "read_bytes",
+    "read_regular_file",
     "resolve_destination",
     "secure_write_bytes",
     "secure_write_stream",
@@ -628,6 +634,12 @@ def read_bytes(path: str | os.PathLike[str], *, limit: int | None = None) -> byt
     ``/dev/zero`` or a process substitution reports a size of 0, and a
     regular file can grow between the check and the read.
 
+    The open is blocking, deliberately: a FIFO with no writer yet waits for
+    one, which is what lets ``--in <(cmd)`` work. It also means a path to a
+    FIFO nobody writes to blocks for ever, so for paths an untrusted party
+    may have chosen use :func:`read_regular_file`, which never blocks and
+    refuses anything but a regular file.
+
     Args:
         path: File to read.
         limit: Largest accepted size in bytes, or :data:`None` for no limit.
@@ -663,5 +675,87 @@ def read_bytes(path: str | os.PathLike[str], *, limit: int | None = None) -> byt
         msg = f"Could not read {source}: {exc.strerror}"
         raise KeyReadError(msg) from exc
     if len(data) > limit:
+        raise InputTooLargeError(source, limit)
+    return data
+
+
+class NotRegularFileError(KeyReadError, OSError):
+    """A path named a FIFO, device or socket, not a regular file.
+
+    Both a :class:`~encryption_helper.errors.KeyReadError`, so it is caught
+    with the rest of this package's errors, and an :class:`OSError` with
+    :attr:`~OSError.strerror` and :attr:`~OSError.filename` set, so code that
+    already reports ``OSError`` from a read -- a scan listing unreadable
+    files, a server turning them into a tool error -- handles it unchanged.
+    """
+
+    def __init__(self, path: Path) -> None:
+        """Record the path that was not a regular file."""
+        super().__init__(None, "not a regular file", str(path))
+
+    def __str__(self) -> str:
+        """Say what was refused, without the ``[Errno None]`` prefix."""
+        return f"{self.filename} is not a regular file."
+
+
+def read_regular_file(
+    path: str | os.PathLike[str], limit: int, *, prefix: bool = False
+) -> bytes:
+    """Read at most ``limit`` bytes of a regular file, refusing anything else.
+
+    For paths this process did not choose -- files found by a directory walk,
+    or named by a remote client. Three guarantees :func:`read_bytes` does not
+    give, because the CLI needs the opposite of each:
+
+    * **It never blocks.** The open is non-blocking, so a FIFO with no writer
+      fails fast instead of stalling the caller for ever.
+    * **It does not follow a final symlink.** A link swapped in after the path
+      was checked fails the open rather than redirecting it.
+    * **It reads only regular files.** The type is checked on the open
+      descriptor, so there is no window between check and read; a FIFO,
+      device or socket raises :class:`NotRegularFileError`, and a directory
+      the :class:`IsADirectoryError` its open raises.
+
+    At most ``limit + 1`` bytes are read (``limit`` with ``prefix``), so the
+    size a file reports, or gains while being read, cannot raise the cost.
+    The path is used as given: no ``~`` expansion and no resolution.
+
+    Args:
+        path: File to read.
+        limit: Most bytes to return; zero or more.
+        prefix: Return the first ``limit`` bytes of a larger file instead of
+            refusing it -- for classifying a file by its head.
+
+    Returns:
+        The contents, or with ``prefix`` their first ``limit`` bytes.
+
+    Raises:
+        InvalidArgumentError: If ``limit`` is negative.
+        NotRegularFileError: If ``path`` is not a regular file. Also an
+            :class:`OSError` and a :class:`~encryption_helper.errors.KeyReadError`.
+        InputTooLargeError: If the file holds more than ``limit`` bytes and
+            ``prefix`` is false.
+        OSError: If the file cannot be opened or read, unchanged, so the
+            caller can report :attr:`~OSError.strerror`. A symlink fails with
+            ``ELOOP`` on POSIX.
+
+    Example:
+        >>> import tempfile, pathlib
+        >>> d = pathlib.Path(tempfile.mkdtemp())
+        >>> _ = (d / "notes.txt").write_bytes(b"hello world")
+        >>> read_regular_file(d / "notes.txt", 64)
+        b'hello world'
+        >>> read_regular_file(d / "notes.txt", 5, prefix=True)
+        b'hello'
+    """
+    if limit < 0:
+        msg = f"limit must be zero or more, not {limit}"
+        raise InvalidArgumentError(msg)
+    source = Path(path)
+    with open(source, "rb", opener=_platform.safe_opener) as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise NotRegularFileError(source)
+        data = handle.read(limit if prefix else limit + 1)
+    if not prefix and len(data) > limit:
         raise InputTooLargeError(source, limit)
     return data

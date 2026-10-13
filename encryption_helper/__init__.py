@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import logging
 
+from ._io import read_regular_file
 from .crypto import decrypt, encrypt, is_valid_signature, sign, verify
 from .crypto.metadata import ContainerInfo, describe_container, is_container
 from .crypto.streaming import decrypt_stream, encrypt_stream
@@ -169,6 +170,7 @@ __all__ = [
     "load_private_key_file",
     "load_public_key",
     "load_public_key_file",
+    "read_regular_file",
     "scan",
     "sign",
     "summarise",

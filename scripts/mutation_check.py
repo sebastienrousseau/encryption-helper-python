@@ -161,6 +161,14 @@ MUTATIONS: tuple[Mutation, ...] = (
         tests=("tests/test_secure_write_stream.py",),
     ),
     Mutation(
+        id="io-regular-only",
+        property="the untrusted-path read refuses FIFOs and devices",
+        path="encryption_helper/_io.py",
+        old="        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):",
+        new="        if False:",
+        tests=("tests/test_read_regular_file.py",),
+    ),
+    Mutation(
         id="io-link-fallback-narrow",
         property="only 'hard links unsupported' drops to the racy rename commit",
         path="encryption_helper/_io.py",
