@@ -37,21 +37,9 @@
 # Base image
 # ---------------------------------------------------------------------------
 #
-# TODO: pin by digest before this image is promoted to a controlled registry.
-# A tag is mutable, so a tag-only reference cannot support reproducible builds
-# or a meaningful provenance attestation. A maintainer with network access
-# obtains the digest with one of:
-#
-#   docker buildx imagetools inspect python:3.12-slim \
-#     --format '{{.Manifest.Digest}}'
-#   docker pull python:3.12-slim && docker image inspect \
-#     --format '{{index .RepoDigests 0}}' python:3.12-slim
-#   skopeo inspect docker://docker.io/library/python:3.12-slim \
-#     | jq -r .Digest
-#
-# The result is then substituted into BOTH stages below, as
-# `python:3.12-slim@sha256:<digest>`, and into the
-# `org.opencontainers.image.base.name` label.
+# Both stages pin python:3.12-slim by the digest of its multi-arch index, so
+# a re-tagged image cannot change what is built; Renovate proposes digest
+# updates. The same digest is recorded in the base.digest label below.
 #
 # 3.12 is chosen rather than the newest interpreter because it sits inside the
 # `requires-python = ">=3.10"` floor declared in pyproject.toml and is the
@@ -128,7 +116,8 @@ LABEL org.opencontainers.image.title="encryption-helper" \
       org.opencontainers.image.source="https://github.com/hsbc/encryption-helper-python" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.version="${VERSION}" \
-      org.opencontainers.image.base.name="docker.io/library/python:3.12-slim"
+      org.opencontainers.image.base.name="docker.io/library/python:3.12-slim" \
+      org.opencontainers.image.base.digest="sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1"
 
 # PYTHONDONTWRITEBYTECODE prevents the interpreter attempting to write .pyc
 # files, which would fail noisily under the read-only root filesystem the

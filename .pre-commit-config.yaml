@@ -1,9 +1,12 @@
 default_language_version:
   python: python3
 
+# Revisions are commit SHAs, not tags: a tag can be moved to different code.
+# Update with `pre-commit autoupdate --freeze`, keeping ruff and mypy at the
+# versions in poetry.lock.
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: cef0300fd0fc4d2a87a85fa2093c6b283ea36f4b  # frozen: v5.0.0
     hooks:
       - id: check-added-large-files
       - id: check-merge-conflict
@@ -17,16 +20,17 @@ repos:
       - id: detect-private-key
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.6
+    rev: 321478e58f4938179c6b86e4ddfa923d1547a49b  # frozen: v0.16.6
     hooks:
       - id: ruff-check
         args: [--fix]
       - id: ruff-format
 
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.18.2
+    rev: 7ff8d35ae36a7d2b968f2f90b4c723e292e594ee  # frozen: v2.3.1
     hooks:
       - id: mypy
-        additional_dependencies: [cryptography, pytest]
+        # Same versions as poetry.lock, so the hook and CI type-check alike.
+        additional_dependencies: [cryptography==50.0.2, pytest==8.3.5]
         args: [--strict]
         files: ^encryption_helper/
