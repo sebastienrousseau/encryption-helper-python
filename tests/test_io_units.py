@@ -24,7 +24,7 @@ from encryption_helper._io import (
     _Displaced,
     _outcome,
     _reject_existing_destination,
-    _write_atomically,
+    secure_write_bytes,
 )
 from encryption_helper.errors import KeyExistsError, KeyWriteError
 
@@ -57,25 +57,28 @@ class TestRejectExistingDestination:
         assert "--force" in str(excinfo.value)
 
 
-class TestWriteAtomically:
-    """The write stage, with no displacement or rollback in play."""
+class TestWriteStage:
+    """The write stage, with no displacement or rollback in play.
+
+    These drove a private ``_write_atomically`` helper. That was a second
+    implementation of the streaming writer, and diverged from it; the stage
+    is now reached through :func:`secure_write_bytes`, which is the stream.
+    """
 
     def test_it_creates_missing_parents(self, tmp_path):
         target = tmp_path / "a" / "b" / "key"
-        _write_atomically(target, b"data", mode=SECRET_FILE_MODE, dir_mode=0o700)
+        secure_write_bytes(target, b"data")
         assert target.read_bytes() == b"data"
 
     @posix_only
     def test_it_applies_the_requested_modes(self, tmp_path):
         target = tmp_path / "nested" / "key"
-        _write_atomically(target, b"data", mode=PUBLIC_FILE_MODE, dir_mode=0o700)
+        secure_write_bytes(target, b"data", mode=PUBLIC_FILE_MODE, dir_mode=0o700)
         assert stat.S_IMODE(target.stat().st_mode) == PUBLIC_FILE_MODE
         assert stat.S_IMODE(target.parent.stat().st_mode) == 0o700
 
     def test_it_leaves_no_temporary_behind_on_success(self, tmp_path):
-        _write_atomically(
-            tmp_path / "key", b"data", mode=SECRET_FILE_MODE, dir_mode=0o700
-        )
+        secure_write_bytes(tmp_path / "key", b"data", mode=SECRET_FILE_MODE)
         assert [p.name for p in tmp_path.iterdir()] == ["key"]
 
     def test_it_leaves_no_temporary_behind_on_failure(self, tmp_path, monkeypatch):
@@ -86,18 +89,14 @@ class TestWriteAtomically:
 
         monkeypatch.setattr(_io.os, "fsync", boom)
         with pytest.raises(KeyWriteError, match="I/O error"):
-            _write_atomically(
-                tmp_path / "key", b"data", mode=SECRET_FILE_MODE, dir_mode=0o700
-            )
+            secure_write_bytes(tmp_path / "key", b"data")
         assert list(tmp_path.iterdir()) == []
 
     def test_an_undirectory_parent_is_a_typed_error(self, tmp_path):
         blocker = tmp_path / "blocker"
         blocker.write_bytes(b"not a directory")
         with pytest.raises(KeyWriteError, match="Could not create directory"):
-            _write_atomically(
-                blocker / "key", b"data", mode=SECRET_FILE_MODE, dir_mode=0o700
-            )
+            secure_write_bytes(blocker / "key", b"data")
 
     def test_a_failing_temporary_file_is_a_typed_error(self, tmp_path, monkeypatch):
         def boom(*_args, **_kwargs):
@@ -105,9 +104,7 @@ class TestWriteAtomically:
 
         monkeypatch.setattr(_io.tempfile, "mkstemp", boom)
         with pytest.raises(KeyWriteError, match="No space left on device"):
-            _write_atomically(
-                tmp_path / "key", b"data", mode=SECRET_FILE_MODE, dir_mode=0o700
-            )
+            secure_write_bytes(tmp_path / "key", b"data")
 
 
 class TestDisplaced:

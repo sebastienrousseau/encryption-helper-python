@@ -166,8 +166,8 @@ class TestFailurePaths:
         secure_write_bytes(target, b"v2", overwrite=True)
         secure_write_bytes(target, b"v3", overwrite=True)
 
-        assert (tmp_path / "key.pem.bak-FIXED").read_bytes() == b"v1"
-        assert (tmp_path / "key.pem.bak-FIXED.1").read_bytes() == b"v2"
+        backups = sorted(tmp_path.glob("key.pem.bak-FIXED-*"))
+        assert sorted(b.read_bytes() for b in backups) == [b"v1", b"v2"]
         assert target.read_bytes() == b"v3"
 
     def test_backup_failure_is_reported(self, tmp_path, monkeypatch):
@@ -263,30 +263,47 @@ class TestPlatformBranches:
 class TestRestoreOnEveryFailurePath:
     """Every path that can fail after displacement must restore it."""
 
-    def test_restore_when_directory_creation_fails(self, tmp_path, monkeypatch):
+    def test_a_failure_before_the_commit_never_moves_the_original(
+        self, tmp_path, monkeypatch
+    ):
+        """The original used to be displaced before the write, then restored.
+
+        It is now displaced only at commit, once the new content is complete
+        and synced, so a failure in any earlier stage -- here the sync --
+        leaves it exactly where it was, with no backup to restore from.
+        """
         target = tmp_path / "key.pem"
         secure_write_bytes(target, b"original")
 
         def boom(*_args, **_kwargs):
-            raise OSError(13, "Permission denied")
+            raise OSError(5, "Input/output error")
 
-        monkeypatch.setattr("pathlib.Path.mkdir", boom)
-        with pytest.raises(KeyWriteError, match="Could not create directory"):
+        monkeypatch.setattr("encryption_helper._io.os.fsync", boom)
+        with pytest.raises(KeyWriteError, match="Could not write"):
             secure_write_bytes(target, b"replacement", overwrite=True)
 
         assert target.read_bytes() == b"original"
-        assert not list(tmp_path.glob("*.bak-*"))
+        assert [p.name for p in tmp_path.iterdir()] == ["key.pem"]
 
     def test_restore_when_the_atomic_rename_fails(self, tmp_path, monkeypatch):
         """The last possible failure point: the commit itself."""
         target = tmp_path / "key.pem"
         secure_write_bytes(target, b"original")
 
+        from encryption_helper import _io as io_module
+
+        real = io_module._commit_without_clobbering
+        calls = []
+
         def failing_commit(tmp, final):
             # Fail only the final commit -- the temporary file being moved
-            # into place. The backup rename and the restore rename must still
-            # work, or the test would prove nothing about restoration.
-            raise OSError(5, "Input/output error")
+            # into place. The backup rename and the restore, which uses the
+            # same no-clobber primitive, must still work, or the test would
+            # prove nothing about restoration.
+            calls.append(tmp)
+            if len(calls) == 1:
+                raise OSError(5, "Input/output error")
+            real(tmp, final)
 
         monkeypatch.setattr(
             "encryption_helper._io._commit_without_clobbering", failing_commit

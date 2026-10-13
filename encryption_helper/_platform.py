@@ -20,17 +20,20 @@ on any host.
 from __future__ import annotations
 
 import contextlib
+import errno
 import os
 import stat
 import sys
 from pathlib import Path
 
 __all__ = [
+    "LINK_UNSUPPORTED_ERRNOS",
     "SAFE_OPEN_FLAGS",
     "WINDOWS",
     "exposed_directory",
     "fsync_directory",
     "group_or_world_readable",
+    "hard_link_unsupported",
     "restrict_descriptor",
     "restrict_path",
     "safe_opener",
@@ -44,6 +47,31 @@ WINDOWS: bool = sys.platform == "win32"
 #: path that was checked is not read through. Windows has neither flag, and
 #: no FIFOs in the filesystem namespace to defend against.
 SAFE_OPEN_FLAGS: int = getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+
+#: ``errno`` values from :func:`os.link` that mean "this filesystem cannot
+#: make a hard link here", as opposed to "this link failed". FAT and exFAT
+#: report EPERM on Linux; some network and FUSE mounts ENOTSUP, EOPNOTSUPP or
+#: ENOSYS; EXDEV and EMLINK mean the link cannot be made at all. Windows maps
+#: its codes onto these, and unmapped codes onto EINVAL -- see
+#: :func:`hard_link_unsupported`. Anything else -- EACCES, ENOSPC, EIO -- is
+#: a real failure of the write, not a reason to fall back to a racier commit.
+LINK_UNSUPPORTED_ERRNOS: frozenset[int] = frozenset(
+    code
+    for code in (
+        errno.EPERM,
+        getattr(errno, "ENOTSUP", None),
+        getattr(errno, "EOPNOTSUPP", None),
+        getattr(errno, "ENOSYS", None),
+        errno.EXDEV,
+        errno.EMLINK,
+    )
+    if code is not None
+)
+
+#: Windows error codes from ``CreateHardLinkW`` meaning the volume has no hard
+#: links: ERROR_INVALID_FUNCTION (FAT), ERROR_NOT_SAME_DEVICE,
+#: ERROR_NOT_SUPPORTED and ERROR_TOO_MANY_LINKS.
+_WINDOWS_LINK_UNSUPPORTED = frozenset({1, 17, 50, 1142})
 
 #: ``S_IWGRP | S_IWOTH``: someone other than the owner may write.
 _WRITABLE_BY_OTHERS = 0o022
@@ -64,6 +92,20 @@ def restrict_path(path: Path, mode: int) -> None:
     """Apply POSIX ``mode`` to a path. No-op on Windows (ACLs)."""
     if not WINDOWS:
         path.chmod(mode)
+
+
+def hard_link_unsupported(error: OSError) -> bool:
+    """Whether a failed :func:`os.link` means the filesystem lacks hard links.
+
+    Only then may a commit fall back to check-then-rename, which cannot rule
+    out replacing a file created in between. Every other failure is the
+    write failing, and is reported as such.
+    """
+    # ``winerror`` exists only on Windows, where it is more precise than the
+    # errno Python derives from it.
+    if getattr(error, "winerror", None) in _WINDOWS_LINK_UNSUPPORTED:
+        return True
+    return error.errno in LINK_UNSUPPORTED_ERRNOS
 
 
 def fsync_directory(directory: Path) -> None:

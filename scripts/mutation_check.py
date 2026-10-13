@@ -77,8 +77,16 @@ MUTATIONS: tuple[Mutation, ...] = (
         id="io-race-cleanup",
         property="a commit lost to a race leaves no copy of the new key behind",
         path="encryption_helper/_io.py",
-        old="    except KeyExistsError:\n        # Lost a race for the name.",
-        new="    except ZeroDivisionError:\n        # Lost a race for the name.",
+        old=(
+            "        # a second copy of the secret -- so it must not outlive a failed "
+            "commit.\n        with contextlib.suppress(OSError):\n"
+            "            tmp_path.unlink()"
+        ),
+        new=(
+            "        # a second copy of the secret -- so it must not outlive a failed "
+            "commit.\n        with contextlib.suppress(OSError):\n"
+            "            pass"
+        ),
         tests=("tests/test_io.py",),
     ),
     Mutation(
@@ -138,27 +146,27 @@ MUTATIONS: tuple[Mutation, ...] = (
         id="io-restore",
         property="a write that fails after displacing a file restores it",
         path="encryption_helper/_io.py",
-        # The buffered writer's rollback site, reached by every failing stage.
-        old=(
-            "        # failed replacement leaves no file where one used to be.\n"
-            "        if displaced is not None:\n            displaced.restore()"
-        ),
-        new=(
-            "        # failed replacement leaves no file where one used to be.\n"
-            "        if displaced is not None:\n            pass"
-        ),
+        # The rollback itself: secure_write_bytes is now the streaming
+        # writer, so its one restore site is shared; this breaks the restore.
+        old="                _commit_without_clobbering(self.backup, self.target)",
+        new="                raise OSError",
         tests=("tests/test_io.py", "tests/test_release_candidate.py"),
     ),
     Mutation(
         id="io-stream-restore",
         property="a streamed write whose commit fails restores the backup",
         path="encryption_helper/_io.py",
-        old=(
-            "                raise displaced.raced(exc) from exc\n"
-            "            displaced.restore()"
-        ),
-        new=("                raise displaced.raced(exc) from exc\n            pass"),
+        old="            if not displaced.restore(replace=committed):",
+        new="            if False:",
         tests=("tests/test_secure_write_stream.py",),
+    ),
+    Mutation(
+        id="io-link-fallback-narrow",
+        property="only 'hard links unsupported' drops to the racy rename commit",
+        path="encryption_helper/_io.py",
+        old="        if not _platform.hard_link_unsupported(exc):",
+        new="        if False:",
+        tests=("tests/test_io_hardening.py",),
     ),
     Mutation(
         id="io-exclusive",

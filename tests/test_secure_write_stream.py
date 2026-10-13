@@ -126,8 +126,18 @@ class TestFailures:
         target = tmp_path / "out.bin"
         target.write_bytes(b"old")
 
+        from encryption_helper import _io
+
+        real = _io._commit_without_clobbering
+        calls = []
+
         def failing_commit(tmp, final):
-            raise OSError(5, "Input/output error")
+            # The restore commits the backup with the same primitive, so
+            # only the first call -- the new content -- fails.
+            calls.append(tmp)
+            if len(calls) == 1:
+                raise OSError(5, "Input/output error")
+            real(tmp, final)
 
         monkeypatch.setattr(
             "encryption_helper._io._commit_without_clobbering", failing_commit

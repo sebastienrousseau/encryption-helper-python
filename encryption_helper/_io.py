@@ -14,6 +14,7 @@ land in a directory other users can write to, refuses to clobber an existing
 file unless explicitly told to, backs up anything it does replace, and writes
 atomically so an interrupted run cannot leave a truncated key behind.
 
+
 .. note::
    POSIX permission bits are enforced directly. On Windows they are not: a
    file inherits its folder's ACL, so a key is as private as its folder. See
@@ -23,8 +24,10 @@ atomically so an interrupted run cannot leave a truncated key behind.
 from __future__ import annotations
 
 import contextlib
+import errno
 import logging
 import os
+import secrets
 import stat
 import tempfile
 from collections.abc import Iterator
@@ -129,6 +132,22 @@ def _timestamp() -> str:
     return datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
+def _random_tag() -> str:
+    """Return the unpredictable part of a backup name.
+
+    A name built from the clock alone can be guessed to the second. In a
+    shared sticky directory another user could then plant an entry -- even a
+    dangling symlink -- at the next backup name, which this user may not
+    rename over, and so block every ``--force``.
+    """
+    return secrets.token_hex(4)
+
+
+#: Characters :func:`tempfile.mkstemp` adds to the destination name: a
+#: leading and a joining dot, eight random characters and ``.tmp``.
+_TEMP_NAME_OVERHEAD = 14
+
+
 class _Displaced(NamedTuple):
     """A file moved aside to make room for its replacement.
 
@@ -141,7 +160,7 @@ class _Displaced(NamedTuple):
     target: Path
     mode: int
 
-    def restore(self, *, replace: bool = True) -> bool:
+    def restore(self, *, replace: bool = False) -> bool:
         """Put the file back where it came from, mode and all.
 
         Called when a write fails after its predecessor was displaced. Failure
@@ -150,9 +169,10 @@ class _Displaced(NamedTuple):
 
         Args:
             replace: Whether whatever is now at the target is this process's
-                own failed write, and so may be replaced. When the target was
-                taken by *another* process, pass False: its file is not ours
-                to destroy, and the original stays at :attr:`backup`.
+                own committed write, and so may be replaced. By default the
+                restore will not replace anything: a file that appeared at the
+                target since the displacement belongs to another process, and
+                the original then stays at :attr:`backup`.
 
         Returns:
             True if the original is back at its path, False if it remains
@@ -188,6 +208,11 @@ def _displace(path: Path) -> _Displaced:
     whatever is about to replace it. A rollback must restore what was there,
     mode included.
 
+    The name carries a random tag as well as the time, and a candidate is
+    skipped if *anything* has that name -- :func:`os.path.lexists`, not
+    :meth:`~pathlib.Path.exists`, which follows symlinks and so reports a
+    dangling link as free, letting the rename replace it.
+
     Args:
         path: Existing file to preserve.
 
@@ -202,17 +227,27 @@ def _displace(path: Path) -> _Displaced:
     except OSError:  # pragma: no cover - raced away between checks
         original_mode = SECRET_FILE_MODE
 
-    backup = path.with_name(f"{path.name}.bak-{_timestamp()}")
-    suffix = 1
-    while backup.exists():
-        backup = path.with_name(f"{path.name}.bak-{_timestamp()}.{suffix}")
-        suffix += 1
+    backup = path.with_name(f"{path.name}.bak-{_timestamp()}-{_random_tag()}")
+    while os.path.lexists(backup):
+        backup = path.with_name(f"{path.name}.bak-{_timestamp()}-{_random_tag()}")
     try:
         path.replace(backup)
-        _platform.restrict_path(backup, original_mode)
     except OSError as exc:
-        msg = f"Could not back up the existing file at {path}: {exc.strerror}"
+        reason = exc.strerror
+        if exc.errno == errno.ENAMETOOLONG:
+            reason = (
+                f"the name is too long to add the backup suffix "
+                f"({len(backup.name) - len(path.name)} characters); "
+                "choose a shorter name"
+            )
+        msg = f"Could not back up the existing file at {path}: {reason}"
         raise KeyWriteError(msg) from exc
+    # A rename keeps the inode's mode, so this only reasserts it. It must not
+    # fail the displacement: the file has already moved, and an error here
+    # would lose the record of where to -- e.g. when the entry displaced is a
+    # symlink, whose mode cannot be set on a platform without ``lchmod``.
+    with contextlib.suppress(OSError):
+        _platform.restrict_path(backup, original_mode)
     return _Displaced(backup=backup, target=path, mode=original_mode)
 
 
@@ -247,8 +282,14 @@ def secure_write_bytes(
     """Write ``data`` to ``path`` atomically with restrictive permissions.
 
     The write goes to a temporary file in the destination directory, which is
-    then renamed over the target. A crash mid-write therefore leaves either the
-    old file or the new one, never a half-written key.
+    then committed under the target name. A crash mid-write therefore leaves
+    either the old file or the new one, never a half-written key.
+
+    This is :func:`secure_write_stream` with a single write, not a parallel
+    implementation. It used to be one, displacing the old file *before*
+    writing and cleaning up only after ``OSError``: a SIGTERM or Ctrl-C
+    during the write left no file at the destination, the old key under its
+    backup name and the new one in a stray temporary file.
 
     Args:
         path: Destination file path.
@@ -256,8 +297,9 @@ def secure_write_bytes(
         mode: Permission bits for the resulting file. Defaults to ``0600``.
         overwrite: If :data:`False` (the default), an existing destination is
             an error. If :data:`True`, the existing file is moved aside to a
-            timestamped ``.bak-`` sibling before being replaced.
-        dir_mode: Permission bits for any parent directories created.
+            timestamped ``.bak-`` sibling once the new content is complete,
+            just before it is committed.
+        dir_mode: Permission bits for every parent directory created.
 
     Returns:
         A :class:`WriteOutcome` recording the path written, any backup taken,
@@ -282,28 +324,11 @@ def secure_write_bytes(
         >>> outcome.path.read_bytes()
         b'payload'
     """
-    target = resolve_destination(path)
-    _reject_symlink(target)
-    replaced = _reject_existing_destination(target, overwrite=overwrite)
-
-    displaced = _displace(target) if replaced else None
-    try:
-        _write_atomically(target, data, mode=mode, dir_mode=dir_mode)
-    except KeyWriteError:
-        # The displaced file is the only copy of the old contents, and the
-        # destination is currently empty. Put it back before reporting, or a
-        # failed replacement leaves no file where one used to be.
-        if displaced is not None:
-            displaced.restore()
-        raise
-    except KeyExistsError as exc:
-        # Another process took the name during the write. Its file is not
-        # ours to replace, so the old contents may have to stay at the backup.
-        if displaced is not None:
-            raise displaced.raced(exc) from exc
-        raise
-
-    return _outcome(target, displaced, replaced=replaced)
+    with secure_write_stream(
+        path, mode=mode, overwrite=overwrite, dir_mode=dir_mode
+    ) as (handle, outcome):
+        handle.write(data)
+    return outcome[0]
 
 
 def _reject_existing_destination(target: Path, *, overwrite: bool) -> bool:
@@ -332,62 +357,70 @@ def _reject_existing_destination(target: Path, *, overwrite: bool) -> bool:
     return True
 
 
-def _write_atomically(target: Path, data: bytes, *, mode: int, dir_mode: int) -> None:
-    """Write ``data`` to ``target`` via a temporary file in the same directory.
+def _make_directories(directory: Path, mode: int) -> None:
+    """Create ``directory`` and any missing ancestors, each at ``mode``.
 
-    Creating the temporary alongside the target keeps the final step a rename
-    within one filesystem, which is atomic. A crash therefore leaves either the
-    old file or the new one, never a half-written key.
-
-    Args:
-        target: Final destination.
-        data: Bytes to write.
-        mode: Permission bits for the resulting file.
-        dir_mode: Permission bits for any parent directories created.
+    ``Path.mkdir(parents=True, mode=...)`` applies ``mode`` to the last
+    level only; the intermediate ones get the umask default, typically
+    ``0755``. Each missing level is therefore created explicitly. Levels
+    that already exist are not touched: their permissions are the owner's
+    choice, and :func:`_warn_if_exposed` reports one that is unsafe.
 
     Raises:
-        KeyWriteError: If the directory, the temporary file, or the write
-            itself fails. The temporary is removed on failure.
+        KeyWriteError: If a level cannot be created, or a non-directory is
+            in the way.
     """
-    parent = target.parent
     try:
-        parent.mkdir(parents=True, exist_ok=True, mode=dir_mode)
+        missing: list[Path] = []
+        level = directory
+        while not level.is_dir() and level != level.parent:
+            missing.append(level)
+            level = level.parent
+        for level in reversed(missing):
+            level.mkdir(mode=mode, exist_ok=True)
     except OSError as exc:
-        msg = f"Could not create directory {parent}: {exc.strerror}"
+        msg = f"Could not create directory {directory}: {exc.strerror}"
         raise KeyWriteError(msg) from exc
-    _warn_if_exposed(parent, mode)
 
+
+def _create_temporary(target: Path) -> tuple[int, Path]:
+    """Create the exclusive, randomly named temporary file beside ``target``.
+
+    Raises:
+        KeyWriteError: If it cannot be created. A name that fits the
+            filesystem's limit but not with the temporary suffix gets a
+            message saying so, rather than a bare "File name too long" for a
+            name the caller can see is valid.
+    """
     try:
-        tmp_fd, tmp_name = tempfile.mkstemp(
-            prefix=f".{target.name}.", suffix=".tmp", dir=parent
+        fd, name = tempfile.mkstemp(
+            prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
         )
     except OSError as exc:
-        msg = f"Could not write to {target}: {exc.strerror}"
+        reason = exc.strerror
+        if exc.errno == errno.ENAMETOOLONG:
+            reason = (
+                "the name is too long for the temporary file an atomic write "
+                f"needs ({_TEMP_NAME_OVERHEAD} more characters); choose a "
+                "shorter name"
+            )
+        msg = f"Could not write to {target}: {reason}"
         raise KeyWriteError(msg) from exc
+    return fd, Path(name)
 
-    tmp_path = Path(tmp_name)
-    try:
-        # Adopt the descriptor before anything can fail, so it is closed on
-        # every path; a failing fchmod used to leak it.
-        with os.fdopen(tmp_fd, "wb") as handle:
-            _platform.restrict_descriptor(handle.fileno(), mode)
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        _commit_without_clobbering(tmp_path, target)
-        _platform.fsync_directory(parent)
-    except KeyExistsError:
-        # Lost a race for the name. The temporary file holds the complete new
-        # content -- for a private key, a second copy of the secret -- so it
-        # must not outlive the failed commit.
-        with contextlib.suppress(OSError):
-            tmp_path.unlink()
-        raise
-    except OSError as exc:
-        with contextlib.suppress(OSError):
-            tmp_path.unlink()
-        msg = f"Could not write to {target}: {exc.strerror}"
-        raise KeyWriteError(msg) from exc
+
+def _write_error(
+    target: Path, exc: OSError, unrestored: _Displaced | None = None
+) -> KeyWriteError:
+    """The typed error for a failed write, naming a backup left behind."""
+    msg = f"Could not write to {target}: {exc.strerror}"
+    if unrestored is not None:
+        msg += (
+            f". It could not be put back, because another file now has its "
+            f"name; the file that was there before is preserved at "
+            f"{unrestored.backup}."
+        )
+    return KeyWriteError(msg)
 
 
 def _commit_without_clobbering(tmp_path: Path, target: Path) -> None:
@@ -401,6 +434,9 @@ def _commit_without_clobbering(tmp_path: Path, target: Path) -> None:
 
     A filesystem without hard links (FAT, some network mounts) falls back to
     a rename after re-checking, which narrows the window but cannot close it.
+    Only an error that means "no hard links here" takes that path -- see
+    :func:`~encryption_helper._platform.hard_link_unsupported`. Anything else
+    (EACCES, ENOSPC, EIO) is the write failing, and is reported as such.
 
     Raises:
         KeyExistsError: If ``target`` appeared after the caller's check.
@@ -415,7 +451,9 @@ def _commit_without_clobbering(tmp_path: Path, target: Path) -> None:
             "in progress. Nothing was overwritten."
         )
         raise KeyExistsError(msg) from exc
-    except OSError:
+    except OSError as exc:
+        if not _platform.hard_link_unsupported(exc):
+            raise
         # Hard links unsupported here. Re-check, then rename.
         if target.exists() or target.is_symlink():
             msg = (
@@ -428,9 +466,18 @@ def _commit_without_clobbering(tmp_path: Path, target: Path) -> None:
     # The link is the commit: the target now holds the new content. Removing
     # the temporary name is cleanup, so its failure must not turn a completed
     # write into a reported failure -- the caller would then roll back a file
-    # that was correctly written.
-    with contextlib.suppress(OSError):
+    # that was correctly written. But the leftover is a second copy of the
+    # content -- for a private key, of the secret -- so it is reported.
+    try:
         tmp_path.unlink()
+    except OSError as exc:
+        logger.warning(
+            "Wrote %s, but could not remove %s (%s). It is a second copy of "
+            "the same content; delete it.",
+            target,
+            tmp_path,
+            exc.strerror,
+        )
 
 
 @contextlib.contextmanager
@@ -441,27 +488,29 @@ def secure_write_stream(
     overwrite: bool = False,
     dir_mode: int = SECRET_DIR_MODE,
 ) -> Iterator[tuple[IO[bytes], list[WriteOutcome]]]:
-    """Stream into ``path`` with the guarantees of :func:`secure_write_bytes`.
+    """Stream into ``path`` atomically, with restrictive permissions.
 
-    For output too large to hold in memory -- a decrypted file, a ciphertext.
-    The data goes to a temporary file in the destination directory at
-    ``mode``; only once the caller's block completes is it committed. So:
+    For output too large to hold in memory -- a decrypted file, a ciphertext
+    -- and the implementation behind :func:`secure_write_bytes`. The data
+    goes to a temporary file in the destination directory at ``mode``; only
+    once the caller's block completes is it committed. So:
 
-    * a failure or interruption part way through leaves the destination
-      untouched and removes the temporary file;
+    * a failure or interruption -- including ``KeyboardInterrupt`` and the
+      ``SystemExit`` the CLI raises on SIGTERM -- before the commit leaves the
+      destination untouched and removes the temporary file;
     * with ``overwrite``, the existing file is moved to a timestamped
       ``.bak-`` sibling *at commit time* -- after the new content is complete
-      -- and restored if the commit fails;
+      -- and restored if the commit fails or is interrupted;
     * a symbolic link at the destination is refused, as is a file created by
-      another process during the write;
-    * parent directories are created at ``dir_mode`` and both the file and
+      another process during the write, and a rollback never replaces one;
+    * every parent directory created gets ``dir_mode``, and both the file and
       its directory are synced.
 
     Args:
         path: Destination file path.
         mode: Permission bits for the resulting file.
         overwrite: Replace an existing file, backing it up first.
-        dir_mode: Permission bits for any parent directories created.
+        dir_mode: Permission bits for every parent directory created.
 
     Yields:
         A writable binary stream, and a list that receives the
@@ -469,8 +518,9 @@ def secure_write_stream(
 
     Raises:
         KeyExistsError: If the destination exists and ``overwrite`` is false,
-            checked before any work is done.
+            checked before any work is done and again at commit.
         KeyWriteError: If the destination is a symlink, or the write fails.
+            An exception raised by the caller's own block propagates as is.
 
     Example:
         >>> import tempfile, pathlib
@@ -486,30 +536,32 @@ def secure_write_stream(
     _reject_existing_destination(target, overwrite=overwrite)
 
     parent = target.parent
-    try:
-        parent.mkdir(parents=True, exist_ok=True, mode=dir_mode)
-        _warn_if_exposed(parent, mode)
-        tmp_fd, tmp_name = tempfile.mkstemp(
-            prefix=f".{target.name}.", suffix=".tmp", dir=parent
-        )
-    except OSError as exc:
-        msg = f"Could not write to {target}: {exc.strerror}"
-        raise KeyWriteError(msg) from exc
+    _make_directories(parent, dir_mode)
+    _warn_if_exposed(parent, mode)
+    tmp_fd, tmp_path = _create_temporary(target)
 
-    tmp_path = Path(tmp_name)
     outcome: list[WriteOutcome] = []
     try:
+        # Adopt the descriptor before anything can fail, so it is closed on
+        # every path; a failing fchmod used to leak it.
         with os.fdopen(tmp_fd, "wb") as handle:
-            _platform.restrict_descriptor(handle.fileno(), mode)
+            try:
+                _platform.restrict_descriptor(handle.fileno(), mode)
+            except OSError as exc:
+                raise _write_error(target, exc) from exc
             yield handle, outcome
-            handle.flush()
-            os.fsync(handle.fileno())
+            try:
+                handle.flush()
+                os.fsync(handle.fileno())
+            except OSError as exc:
+                raise _write_error(target, exc) from exc
     except BaseException:
         with contextlib.suppress(OSError):
             tmp_path.unlink()
         raise
 
     displaced = None
+    committed = False
     try:
         # Re-checked at commit: the destination may have changed during a
         # long write. A file that appeared is refused unless overwriting.
@@ -517,17 +569,23 @@ def secure_write_stream(
         if _reject_existing_destination(target, overwrite=overwrite):
             displaced = _displace(target)
         _commit_without_clobbering(tmp_path, target)
+        committed = True
         _platform.fsync_directory(parent)
     except BaseException as exc:
+        # The temporary holds the complete new content -- for a private key,
+        # a second copy of the secret -- so it must not outlive a failed commit.
         with contextlib.suppress(OSError):
             tmp_path.unlink()
+        unrestored = None
         if displaced is not None:
             if isinstance(exc, KeyExistsError):
                 raise displaced.raced(exc) from exc
-            displaced.restore()
+            # Only a target this process committed may be replaced; anything
+            # else there was created by someone else since the displacement.
+            if not displaced.restore(replace=committed):
+                unrestored = displaced
         if isinstance(exc, OSError):
-            msg = f"Could not write to {target}: {exc.strerror}"
-            raise KeyWriteError(msg) from exc
+            raise _write_error(target, exc, unrestored) from exc
         raise
 
     outcome.append(_outcome(target, displaced, replaced=displaced is not None))
