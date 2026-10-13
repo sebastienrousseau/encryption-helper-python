@@ -244,3 +244,45 @@ class TestUndoBranches:
         )
         assert target.read_bytes() == b"old"
         assert not backup.exists()
+
+
+class TestInterruptedPublicWrite:
+    """Ctrl-C or ``sys.exit`` mid-pair must roll back like any other failure.
+
+    The rollback caught :class:`Exception`, which ``KeyboardInterrupt`` and
+    ``SystemExit`` are not, so an interrupt during the public write left a
+    private key with no public half -- the state the pair transaction exists
+    to prevent.
+    """
+
+    @staticmethod
+    def _interrupt_public_write(monkeypatch, exc):
+        real = store.secure_write_bytes
+        calls = []
+
+        def write(path, data, **kwargs):
+            calls.append(path)
+            if len(calls) == 2:  # the public half
+                raise exc
+            return real(path, data, **kwargs)
+
+        monkeypatch.setattr(store, "secure_write_bytes", write)
+
+    @pytest.mark.parametrize("exc", [KeyboardInterrupt(), SystemExit(130)])
+    def test_a_new_pair_leaves_nothing(self, tmp_path, ed25519_key, monkeypatch, exc):
+        self._interrupt_public_write(monkeypatch, exc)
+        with pytest.raises(type(exc)) as raised:
+            write_key_pair(ed25519_key, tmp_path)
+        assert raised.value is exc
+        assert sorted(p.name for p in tmp_path.iterdir()) == []
+
+    @pytest.mark.parametrize("exc", [KeyboardInterrupt(), SystemExit(130)])
+    def test_a_replaced_pair_is_restored(self, tmp_path, ed25519_key, monkeypatch, exc):
+        (tmp_path / "key.pem").write_bytes(b"old private")
+        (tmp_path / "key.pub.pem").write_bytes(b"old public")
+        self._interrupt_public_write(monkeypatch, exc)
+        with pytest.raises(type(exc)):
+            write_key_pair(ed25519_key, tmp_path, overwrite=True)
+        assert (tmp_path / "key.pem").read_bytes() == b"old private"
+        assert (tmp_path / "key.pub.pem").read_bytes() == b"old public"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["key.pem", "key.pub.pem"]

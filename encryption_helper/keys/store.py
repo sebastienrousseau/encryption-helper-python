@@ -176,6 +176,9 @@ def _validate_pair(
         reloaded_private = load_private_key(private_bytes, passphrase=passphrase)
         reloaded_public = load_public_key(public_bytes)
     except Exception as exc:
+        # Exception, deliberately not BaseException: nothing has been written
+        # yet, so an interrupt needs no cleanup and must not be disguised as
+        # a validation failure.
         msg = (
             f"The generated {fmt} key pair could not be parsed back after "
             "serialisation; refusing to write it."
@@ -398,7 +401,12 @@ def write_key_pair(  # noqa: PLR0913 - all but two are keyword-only options
         public_outcome = secure_write_bytes(
             public_path, public_bytes, mode=PUBLIC_FILE_MODE, overwrite=overwrite
         )
-    except Exception:
+    except BaseException:
+        # BaseException, not Exception: Ctrl-C or SystemExit arriving here
+        # would otherwise skip the undo and leave a private key with no
+        # public half. Nothing is swallowed -- the bare raise below re-raises
+        # the original exception unchanged.
+        #
         # Rollback layer 2 of 2. secure_write_bytes() has already restored
         # anything it displaced internally, so by the time we get here the
         # public destination is in its original state. All that remains is to
