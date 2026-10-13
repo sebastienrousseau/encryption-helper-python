@@ -281,6 +281,12 @@ pg_dump mydb | encryption-helper encrypt --public-key backup.pub.pem > dump.enc
 
 With `--json`, the report moves to stderr so stdout stays pure.
 
+`decrypt` and `convert --private` will not print plaintext or a private key
+to an interactive terminal, where it would land in scrollback and terminal
+logs: give `--out FILE`, pipe the output, or pass `--out -` to insist. If the
+reader closes the pipe early (`| head`), the command exits `141`, so a
+`set -o pipefail` pipeline sees that the output was cut short.
+
 ### Progress
 
 A multi-gigabyte operation with no output is indistinguishable from a hang:
@@ -449,6 +455,7 @@ world-readable.
 | `3` | A destination exists and `--force` was not given |
 | `4` | Decryption or signature verification failed |
 | `5` | `scan --fail-on-finding` found findings needing attention |
+| `141` | The reader closed stdout before all output was written (128 + SIGPIPE) |
 
 ---
 

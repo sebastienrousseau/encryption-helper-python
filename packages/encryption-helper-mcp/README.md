@@ -88,9 +88,20 @@ To run the server without installing Python, use the container sandbox:
 
 Classification is by file contents, not by filename. Symbolic links are not
 followed, only regular files are read, and at most 64 KiB is read from any one
-file. At most `limit` findings are returned (default 200, at most 2,000);
-`summary` always covers all of them, and `truncated` says whether any were
-left out.
+file. At most `limit` findings are returned (default 200, at most 2,000),
+and at most 1 MiB of them; `summary` always covers all of them, and
+`truncated` says whether any were left out.
+
+One call examines at most 100,000 files and directories and walks for at
+most 30 seconds. If either bound stops it, `incomplete` says which, and a
+narrower path examines the rest. A file or directory replaced while the
+scan runs -- swapped for a link to somewhere outside the root, say -- is
+reported as changed rather than followed, and a file the scan cannot
+interpret is reported as `unreadable` rather than ending the scan.
+
+Every path outside the root is refused with the same message, whether or not
+it exists, so the server cannot be used to probe the host. `~` is not
+expanded: it is an ordinary name inside the root.
 
 `inspect_container` and `fingerprint_public_key` likewise refuse anything that
 is not a regular file -- a FIFO would otherwise stall the single-threaded

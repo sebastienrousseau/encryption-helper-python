@@ -203,7 +203,8 @@ cat report.csv \
 ```
 
 `verify` exits 4 if the signature does not verify. The full set is 0 success,
-1 error, 2 usage, 3 key already exists, 4 cryptographic failure.
+1 error, 2 usage, 3 key already exists, 4 cryptographic failure, 5 scan
+findings needing attention, and 141 when the reader closed stdout early.
 
 ### 3.5 Inspection, fingerprinting and conversion
 

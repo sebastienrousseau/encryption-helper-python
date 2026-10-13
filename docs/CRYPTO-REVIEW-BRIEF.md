@@ -127,7 +127,8 @@ Primitive implementations; key file permissions, atomicity and rollback
 - `fuzz/` — parser fuzz targets; the harnesses are mutation-tested, so
   planting a defect is caught within two iterations with a reproducible seed
 - `ARCHITECTURE.md` — dependency direction, invariants, format diagrams
-- 100% statement and branch coverage; `mypy --strict`; `bandit` clean
+- 100% statement and branch coverage of `crypto/`; `mypy --strict`;
+  `bandit` clean
 
 ## 5. Known gaps we are not asking about
 
@@ -137,3 +138,13 @@ Primitive implementations; key file permissions, atomicity and rollback
 - Keys are ordinary Python objects: not locked into RAM, not zeroed. Stated in
   the threat model.
 - Windows permissions are advisory; POSIX modes do not express NTFS ACLs.
+- **AES-GCM is not key-committing.** An X25519 sender knows every
+  recipient's content key, so it can build one container that two recipients
+  each decrypt successfully to a different plaintext. RSA-OAEP and ML-KEM
+  (implicit rejection) are not affected. Fixing it changes the container
+  format; documented in `crypto/envelope.py`, with signing the plaintext as
+  the remedy where one-plaintext-per-container matters.
+- **ECDSA signatures are malleable**: `(r, n - s)` verifies as well as
+  `(r, s)`. High-s is accepted for compatibility with other producers;
+  documented in `crypto/signing.py`. Ed25519, Ed448 and ML-DSA are not
+  malleable.

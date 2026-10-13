@@ -7,7 +7,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **One message can no longer stop the MCP server.** JSON nested deeper
+  than the interpreter stack, or an integer over 4,300 digits, raised out of
+  `serve()` and ended the process. Each is now one parse error.
+- **An interrupted key write no longer loses the key.** Ctrl-C or SIGTERM
+  while `secure_write_bytes` replaced a file left no file at the
+  destination, the old key in a backup and the new one in a temporary file;
+  an interrupt during the public half of `write_key_pair` left a private
+  key with no public key. `secure_write_bytes` is now the streaming writer, which
+  already handled this, and the pair rolls back on any interruption.
+- **scrypt-protected keys are held to a cost ceiling**, as PBKDF2 ones
+  already were. A crafted key cost 17 s per load attempt, wrong passphrase
+  or not, and the cost was the file's to choose. Keys above N=2^20, r=8,
+  p=1 of work or 1 GiB of memory are refused before any derivation.
+- **A scan reads what its walk found.** Replacing a directory, or a parent
+  above it, with a link mid-scan redirected the scan outside the tree; each
+  entry's device and inode are now confirmed when it is opened.
+- **The MCP server no longer reveals what exists outside its root.** A path
+  outside the root is refused with one message whether or not it exists,
+  and `~` is not expanded. Non-string and NUL-containing paths are refused
+  as correctable errors.
+- **The MCP `scan_directory` tool is bounded**: 100,000 entries, 30
+  seconds and 1 MiB of findings per call, with `incomplete` saying when a
+  bound stopped it.
+- **`decrypt` and `convert --private` refuse to print to a terminal**
+  unless `--out -` is given, so plaintext and private keys do not land in
+  scrollback or terminal logs. Pipes and files are unaffected.
+- `cryptography` is now `>=50.0.0,<51.0.0`. 48.0.0 carried seven OSV
+  advisories, including one in its bundled OpenSSL; 50.0.0 carries none.
+- The published wheel is built with a hash-pinned build backend
+  (`--no-isolation`), and every CI tool is installed from
+  `requirements/ci.txt` with hashes. Pre-commit hooks are pinned to commits.
+
 ### Fixed
+
+- One crafted certificate no longer aborts an inventory scan: a certificate
+  whose key cannot be loaded is an undetermined finding, and any other
+  failure to interpret a file is an `unreadable` finding for that file.
+- A scan root that is missing, a dangling link or a FIFO is reported as
+  `unreadable` instead of scanning as empty, so a gate over it cannot pass
+  having examined nothing.
+- `encrypt` and `decrypt` raise `InvalidArgumentError` / `DecryptionError`
+  past the AES-GCM 2 GiB limit, not a bare `OverflowError`, and
+  `decrypt_stream` bounds its segment count as `encrypt_stream` does.
+- With `--json`, argparse usage errors and the unencrypted-key refusal are
+  JSON on stderr like every other error.
+- A command whose reader closes the pipe early exits `141`, not `0`.
+- Calling `main()` repeatedly in one process honours each call's flags, and
+  a host with logging configured sees each record once.
+- Intermediate directories created for a secret file get the secret
+  directory mode, not the umask default. Backup names carry a random
+  component; a rollback never overwrites a file another process created;
+  only "hard links unsupported" falls back to the rename commit.
+- `describe_key` names X448 keys; every module reads one key-type table.
+- `decrypt_stream` holds three segments at a time, as documented, rather
+  than four, and one-shot `decrypt` no longer copies the ciphertext.
+  Memory figures in the docstrings and CLI messages are now measured ones.
+- The RSA wrong-length content-key error uses the uniform decryption
+  message.
+
+### Added
+
+- `decrypt_stream(..., max_segment_size=...)`, so a reader of untrusted
+  containers can cap the segment size it will allocate; `encrypt_stream`
+  and `decrypt_stream` are exported from the package root.
+- `read_regular_file(path, limit, *, prefix=False)`: a non-blocking,
+  no-follow, regular-file-only, bounded read, now used by the MCP server
+  instead of its own copy of the platform open flags.
+- `inventory.scan_report()` and `inventory.build_report()`: the scan report
+  the CLI and the MCP server share, with optional bounds.
+- `encryption_helper.cli.EXIT_BROKEN_PIPE`.
+
+### Documented
+
+- AES-GCM is not key-committing: an X25519 sender can make one container
+  decrypt to different plaintexts for different recipients. Sign the
+  plaintext where that matters.
+- ECDSA signatures are malleable; do not use their bytes as an identifier.
+- Passphrases and decrypted keys are immutable `bytes` and cannot be
+  zeroised in Python.
+
+### Fixed (earlier in this cycle)
 
 - **Platform differences live in one adapter, and the permission claims are
   now true.** `sys.platform` and `os.name` checks were spread over three
