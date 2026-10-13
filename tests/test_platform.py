@@ -28,21 +28,76 @@ posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits
 PACKAGE = Path(_platform.__file__).parent
 
 
+#: Both distributions: the MCP server once carried its own copy of the open
+#: flags, which this test did not look at.
+SOURCES = (PACKAGE, PACKAGE.parent / "packages" / "encryption-helper-mcp")
+
+#: Attributes of ``os`` that only exist, or only mean something, on some
+#: platforms. Reaching for one is a platform decision.
+_PLATFORM_ATTRIBUTES = frozenset(
+    {
+        "fchmod",
+        "lchmod",
+        "geteuid",
+        "getuid",
+        "supports_fd",
+        "supports_dir_fd",
+        "supports_follow_symlinks",
+    }
+)
+
+
+def _platform_checks(path: Path) -> list[int]:
+    """Line numbers in ``path`` that test or depend on the platform."""
+    lines = []
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Attribute) and (
+            (node.attr == "platform" and getattr(node.value, "id", "") == "sys")
+            or (node.attr == "name" and getattr(node.value, "id", "") == "os")
+            or (
+                node.attr.startswith("O_")
+                and node.attr not in {"O_RDONLY", "O_WRONLY", "O_RDWR"}
+            )
+            or node.attr in _PLATFORM_ATTRIBUTES
+        ):
+            lines.append(node.lineno)
+        # getattr(os, "O_NOFOLLOW", 0): the same flag, spelled as a string.
+        if (
+            isinstance(node, ast.Call)
+            and getattr(node.func, "id", "") == "getattr"
+            and len(node.args) >= 2
+            and getattr(node.args[0], "id", "") == "os"
+            and isinstance(node.args[1], ast.Constant)
+        ):
+            lines.append(node.lineno)
+    return lines
+
+
 def test_no_other_module_tests_the_platform():
     """A platform check outside the adapter is how logic leaks back in."""
-    offenders = []
-    for path in PACKAGE.rglob("*.py"):
-        if path.name == "_platform.py":
-            continue
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Attribute) and (
-                (node.attr == "platform" and getattr(node.value, "id", "") == "sys")
-                or (node.attr == "name" and getattr(node.value, "id", "") == "os")
-                or node.attr in {"fchmod", "O_NOFOLLOW", "O_NONBLOCK"}
-            ):
-                offenders.append(f"{path.relative_to(PACKAGE)}:{node.lineno}")
+    offenders = [
+        f"{path.relative_to(PACKAGE.parent)}:{line}"
+        for source in SOURCES
+        for path in sorted(source.rglob("*.py"))
+        if path.name != "_platform.py" and "tests" not in path.parts
+        for line in _platform_checks(path)
+    ]
     assert offenders == [], f"platform logic outside _platform.py: {offenders}"
+
+
+def test_the_check_sees_every_spelling(tmp_path):
+    """The detector itself must catch the forms that once slipped past it."""
+    sample = tmp_path / "leak.py"
+    sample.write_text(
+        "import os, sys\n"
+        "a = sys.platform\n"
+        "b = getattr(os, 'O_NOFOLLOW', 0)\n"
+        "c = os.O_DIRECTORY\n"
+        "d = os.scandir in os.supports_fd\n"
+        "e = os.O_RDONLY\n",
+        encoding="utf-8",
+    )
+    assert _platform_checks(sample) == [2, 3, 4, 5]
 
 
 @posix_only
