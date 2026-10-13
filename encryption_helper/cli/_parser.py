@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from ..crypto.streaming import DEFAULT_SEGMENT_SIZE
@@ -18,18 +19,6 @@ from ..keys import (
     SUPPORTED_CURVES,
     SUPPORTED_MLDSA_LEVELS,
     SUPPORTED_MLKEM_LEVELS,
-)
-from ._commands import (
-    _cmd_capabilities,
-    _cmd_convert,
-    _cmd_decrypt,
-    _cmd_encrypt,
-    _cmd_fingerprint,
-    _cmd_inspect,
-    _cmd_keygen,
-    _cmd_scan,
-    _cmd_sign,
-    _cmd_verify,
 )
 from ._constants import _LOG_LEVELS, _STDIO, DEFAULT_MAX_INPUT_BYTES
 from ._output import JsonAwareParser, _VersionAction
@@ -53,6 +42,42 @@ def _positive_size(text: str) -> int:
 
 
 logger = logging.getLogger(__name__)
+
+
+class _Handler:
+    """A subcommand's implementation, named here and imported when called.
+
+    Importing the ten ``_cmd_*`` functions directly made building the
+    parser load every command's dependencies -- passphrase handling, the
+    stream writers, the scanner -- just to print ``--help`` or report a
+    usage error. The parser records the handler's *name* instead, and the
+    command module is imported only when one actually runs. Resolution
+    happens at each call, so the function that runs is whatever
+    :mod:`._commands` holds at dispatch time.
+
+    It stays callable, so ``args.func(args)`` keeps working for any caller
+    that dispatches through the parsed namespace.
+    """
+
+    __slots__ = ("name",)
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def resolve(self) -> Callable[[argparse.Namespace], int]:
+        """Import :mod:`._commands` and return the named function."""
+        from . import _commands  # noqa: PLC0415 - deferred on purpose
+
+        handler: Callable[[argparse.Namespace], int] = getattr(_commands, self.name)
+        return handler
+
+    def __call__(self, args: argparse.Namespace) -> int:
+        """Run the command."""
+        return self.resolve()(args)
+
+    def __repr__(self) -> str:
+        """Name the handler without importing it."""
+        return f"_Handler({self.name!r})"
 
 
 def _add_passphrase_flags(
@@ -314,7 +339,7 @@ def _add_keygen(sub: _SubParsers) -> None:
         help="Also write the public key to stdout. The private key is never printed.",
     )
     _add_passphrase_flags(keygen, allow_opt_out=True)
-    keygen.set_defaults(func=_cmd_keygen)
+    keygen.set_defaults(func=_Handler("_cmd_keygen"))
 
 
 def _add_encrypt(sub: _SubParsers) -> None:
@@ -329,7 +354,7 @@ def _add_encrypt(sub: _SubParsers) -> None:
     )
     enc.add_argument("--public-key", required=True, metavar="PATH")
     _add_io_flags(enc)
-    enc.set_defaults(func=_cmd_encrypt)
+    enc.set_defaults(func=_Handler("_cmd_encrypt"))
 
 
 def _add_decrypt(sub: _SubParsers) -> None:
@@ -342,7 +367,7 @@ def _add_decrypt(sub: _SubParsers) -> None:
     dec.add_argument("--private-key", required=True, metavar="PATH")
     _add_io_flags(dec)
     _add_passphrase_flags(dec)
-    dec.set_defaults(func=_cmd_decrypt)
+    dec.set_defaults(func=_Handler("_cmd_decrypt"))
 
 
 def _add_sign(sub: _SubParsers) -> None:
@@ -355,7 +380,7 @@ def _add_sign(sub: _SubParsers) -> None:
     sgn.add_argument("--private-key", required=True, metavar="PATH")
     _add_io_flags(sgn)
     _add_passphrase_flags(sgn)
-    sgn.set_defaults(func=_cmd_sign)
+    sgn.set_defaults(func=_Handler("_cmd_sign"))
 
 
 def _add_verify(sub: _SubParsers) -> None:
@@ -368,7 +393,7 @@ def _add_verify(sub: _SubParsers) -> None:
     vfy.add_argument("--public-key", required=True, metavar="PATH")
     vfy.add_argument("--signature", required=True, metavar="PATH")
     _add_io_flags(vfy, output=False)
-    vfy.set_defaults(func=_cmd_verify)
+    vfy.set_defaults(func=_Handler("_cmd_verify"))
 
 
 def _add_fingerprint(sub: _SubParsers) -> None:
@@ -382,7 +407,7 @@ def _add_fingerprint(sub: _SubParsers) -> None:
         ),
     )
     fpr.add_argument("key", metavar="PATH")
-    fpr.set_defaults(func=_cmd_fingerprint)
+    fpr.set_defaults(func=_Handler("_cmd_fingerprint"))
 
 
 def _add_capabilities(sub: _SubParsers) -> None:
@@ -396,7 +421,7 @@ def _add_capabilities(sub: _SubParsers) -> None:
             "deprecation horizon. Use --json for a cryptographic inventory."
         ),
     )
-    caps.set_defaults(func=_cmd_capabilities)
+    caps.set_defaults(func=_Handler("_cmd_capabilities"))
 
 
 def _add_inspect(sub: _SubParsers) -> None:
@@ -412,7 +437,7 @@ def _add_inspect(sub: _SubParsers) -> None:
         ),
     )
     _add_io_flags(insp, output=False)
-    insp.set_defaults(func=_cmd_inspect)
+    insp.set_defaults(func=_Handler("_cmd_inspect"))
 
 
 def _add_scan(sub: _SubParsers) -> None:
@@ -449,7 +474,7 @@ def _add_scan(sub: _SubParsers) -> None:
             "exits 1, and a path that does not exist exits 2."
         ),
     )
-    scn.set_defaults(func=_cmd_scan)
+    scn.set_defaults(func=_Handler("_cmd_scan"))
 
 
 def _add_convert(sub: _SubParsers) -> None:
@@ -480,4 +505,4 @@ def _add_convert(sub: _SubParsers) -> None:
     )
     _add_io_flags(cvt)
     _add_passphrase_flags(cvt)
-    cvt.set_defaults(func=_cmd_convert)
+    cvt.set_defaults(func=_Handler("_cmd_convert"))

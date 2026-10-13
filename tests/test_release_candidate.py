@@ -682,7 +682,7 @@ class TestNamespaceHygiene:
             return result
 
         monkeypatch.setattr(_commands, "_cmd_keygen", capture)
-        # set_defaults captured the original function, so re-parse via main().
+        # Parse, then run the capturing wrapper on exactly that namespace.
         parser = cli_module.build_parser()
         parsed = parser.parse_args(keygen_rc(tmp_path, "--passphrase-env", "EH_RC"))
         capture(parsed)

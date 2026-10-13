@@ -143,3 +143,63 @@ class TestRepeatedInProcessCalls:
         # Reported from outside any call: the default, plain text.
         emit_error("after the call", 1)
         assert capsys.readouterr().err == "error: after the call\n"
+
+
+class TestParserImportsNoCommands:
+    """Building the parser does not load the command implementations.
+
+    ``_parser`` imported all ten ``_cmd_*`` handlers, so constructing the
+    parser -- for ``--help``, for a usage error, for documentation tests --
+    loaded every command's dependencies whether or not one would run.
+    """
+
+    def test_importing_the_parser_leaves_the_commands_unloaded(self):
+        probe = (
+            "import sys\n"
+            "from encryption_helper.cli._parser import build_parser\n"
+            "build_parser().parse_args(['capabilities'])\n"
+            "loaded = [m for m in ('encryption_helper.cli._commands',\n"
+            "    'encryption_helper.cli._passphrase',\n"
+            "    'encryption_helper.cli._streams') if m in sys.modules]\n"
+            "print(loaded)\n"
+        )
+        result = subprocess.run(  # noqa: S603
+            [sys.executable, "-c", probe],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert result.stdout.strip() == "[]"
+
+    def test_every_subcommand_names_a_real_handler(self):
+        import argparse
+
+        from encryption_helper.cli import _commands, build_parser
+
+        (subparsers,) = (
+            action
+            for action in build_parser()._actions
+            if isinstance(action, argparse._SubParsersAction)
+        )
+        for name, subparser in subparsers.choices.items():
+            handler = subparser.get_default("func")
+            assert callable(handler), name
+            assert handler.resolve() is getattr(_commands, f"_cmd_{name}"), name
+
+    def test_args_func_still_runs_the_command(self, capsys):
+        from encryption_helper.cli import build_parser
+
+        args = build_parser().parse_args(["--json", "capabilities"])
+        assert args.func(args) == EXIT_OK
+        assert envelope(capsys.readouterr().out)["command"] == "capabilities"
+
+    def test_a_handler_patched_after_parsing_is_the_one_that_runs(self, monkeypatch):
+        """Resolution is at dispatch, so the module's current function runs."""
+        from encryption_helper.cli import _commands
+
+        calls = []
+        monkeypatch.setattr(
+            _commands, "_cmd_capabilities", lambda args: calls.append(args) or 7
+        )
+        assert main(["capabilities"]) == 7
+        assert len(calls) == 1
