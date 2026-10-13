@@ -41,8 +41,9 @@ def _read_input(source: str, *, max_size: int = DEFAULT_MAX_INPUT_BYTES) -> byte
     """Read from a path, or from stdin when ``source`` is ``-``.
 
     Enforces a ceiling, because the whole payload is held in memory and peak
-    usage is about four times its size. Refusing is better than being killed
-    by the OOM reaper half way through writing an output file.
+    usage, the input included, is about twice its size. Refusing is better
+    than being killed by the OOM reaper half way through writing an output
+    file.
 
     Raises:
         SystemExit: If the input exceeds ``max_size``.
@@ -54,7 +55,7 @@ def _read_input(source: str, *, max_size: int = DEFAULT_MAX_INPUT_BYTES) -> byte
         if len(data) > max_size:
             _fail_usage(
                 f"Input exceeds the {max_size}-byte limit. Raise --max-size if "
-                "you have the memory for roughly four times that."
+                "you have the memory for about twice that."
             )
         return data
 
@@ -66,7 +67,7 @@ def _read_input(source: str, *, max_size: int = DEFAULT_MAX_INPUT_BYTES) -> byte
     if size > max_size:
         _fail_usage(
             f"{path} is {size} bytes, which exceeds the {max_size}-byte limit. "
-            "Raise --max-size if you have the memory for roughly four times "
+            "Raise --max-size if you have the memory for about twice "
             "that."
         )
     # The stat() above gives a precise message for an ordinary file, but it
@@ -76,7 +77,7 @@ def _read_input(source: str, *, max_size: int = DEFAULT_MAX_INPUT_BYTES) -> byte
     except InputTooLargeError:
         _fail_usage(
             f"{path} exceeds the {max_size}-byte limit. Raise --max-size if "
-            "you have the memory for roughly four times that."
+            "you have the memory for about twice that."
         )
 
 

@@ -55,13 +55,14 @@ _LOG_LEVELS: Final = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 #: rather than an out-of-memory event.
 MAX_PASSPHRASE_FILE_BYTES: Final = 64 * 1024
 
-#: Default ceiling on data passed to encrypt or decrypt.
+#: Default ceiling on input a command holds whole in memory.
 #:
-#: Encryption holds the whole message in memory, and peak usage measures at
-#: roughly four times the payload -- plaintext, ciphertext and intermediate
-#: copies are all resident. A 1 GiB file therefore needs about 4 GiB. Rather
-#: than let that become an out-of-memory kill, the CLI refuses and says so.
-#: Raise it with --max-size if you have the headroom.
+#: ``encrypt`` streams and is not bounded by this. ``decrypt`` of a one-shot
+#: container (or of anything read from stdin), ``sign`` and ``verify`` hold
+#: the input whole, and their peak, input included, measures at about twice
+#: the payload with tracemalloc. A 1 GiB file therefore needs about 2 GiB.
+#: Rather than let that become an out-of-memory kill, the CLI refuses and
+#: says so. Raise it with --max-size if you have the headroom.
 DEFAULT_MAX_INPUT_BYTES: Final = 64 * 1024 * 1024
 
 #: Largest detached signature file read. The largest signature this package
