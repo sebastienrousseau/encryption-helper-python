@@ -32,15 +32,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from cryptography.hazmat.primitives.asymmetric import (
-    ec,
-    ed448,
-    ed25519,
-    mldsa,
-    mlkem,
-    rsa,
-    x25519,
-)
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.hazmat.primitives.asymmetric.types import PrivateKeyTypes
 
 from .. import _platform
@@ -51,6 +43,7 @@ from .._io import (
     resolve_destination,
     secure_write_bytes,
 )
+from .._labels import key_type
 from ..errors import (
     InvalidArgumentError,
     KeyExistsError,
@@ -104,21 +97,6 @@ class KeyGenerationResult:
     replaced: bool = False
 
 
-#: Key class -> (algorithm name, size). "Size" is a modulus for RSA, a curve
-#: size for ECDSA, and a parameter set for the post-quantum algorithms, which
-#: is what identifies the variant and what callers display.
-_KEY_DESCRIPTIONS: tuple[tuple[type, str, int | None], ...] = (
-    (ed25519.Ed25519PrivateKey, "ed25519", 256),
-    (ed448.Ed448PrivateKey, "ed448", 448),
-    (x25519.X25519PrivateKey, "x25519", 256),
-    (mlkem.MLKEM768PrivateKey, "mlkem", 768),
-    (mlkem.MLKEM1024PrivateKey, "mlkem", 1024),
-    (mldsa.MLDSA44PrivateKey, "mldsa", 44),
-    (mldsa.MLDSA65PrivateKey, "mldsa", 65),
-    (mldsa.MLDSA87PrivateKey, "mldsa", 87),
-)
-
-
 def describe_key(key: PrivateKeyTypes) -> tuple[str, int | None]:
     """Return the algorithm name and size for a private key.
 
@@ -141,9 +119,10 @@ def describe_key(key: PrivateKeyTypes) -> tuple[str, int | None]:
         return "rsa", key.key_size
     if isinstance(key, ec.EllipticCurvePrivateKey):
         return "ecdsa", key.curve.key_size
-    for cls, name, size in _KEY_DESCRIPTIONS:
-        if isinstance(key, cls):
-            return name, size
+    # Everything else comes from the package's one table of key types.
+    entry = key_type(key)
+    if entry is not None and isinstance(key, entry.private):
+        return entry.algorithm, entry.size
     return type(key).__name__.lower(), None
 
 
