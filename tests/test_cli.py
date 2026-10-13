@@ -665,7 +665,7 @@ class TestLoggingFlags:
         def observing_generate(*args, **kwargs):
             # The level in force while the command runs, not at some other
             # moment: main() restores the previous level when it returns.
-            level = logging_module.getLogger().getEffectiveLevel()
+            level = logging_module.getLogger("encryption_helper").getEffectiveLevel()
             captured["level"] = logging_module.getLevelName(level)
             return real(*args, **kwargs)
 

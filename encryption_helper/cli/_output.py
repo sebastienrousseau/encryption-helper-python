@@ -63,6 +63,10 @@ def _log_level(args: argparse.Namespace) -> int:
     return logging.WARNING
 
 
+#: The logger every module of this package logs under.
+_PACKAGE_LOGGER = "encryption_helper"
+
+
 @contextlib.contextmanager
 def _logging_configured(args: argparse.Namespace) -> Iterator[None]:
     """Log to stderr at the requested level for one invocation, then undo it.
@@ -70,23 +74,30 @@ def _logging_configured(args: argparse.Namespace) -> Iterator[None]:
     This used ``logging.basicConfig``, which does nothing once the root
     logger has a handler: a host calling :func:`~._main.main` twice kept the
     first call's level, and a host with logging already set up never got
-    the level asked for at all. A dedicated handler is added instead, and
-    it and the root level are put back afterwards, so each call honours its
-    own flags and the host's configuration is left as it was. The root
-    logger is still process-wide, so concurrent calls from several threads
-    share one level -- the last to start wins until it finishes.
+    the level asked for at all. Adding a handler to the root logger instead
+    printed every record twice in such a host, once through each handler.
+
+    Only the package's own logger, ``encryption_helper``, is configured: a
+    stderr handler at the requested level, with propagation to the root
+    stopped while the call runs, so each record prints exactly once and the
+    host's own logging configuration is never touched. Its handler, level
+    and propagation are put back afterwards. The logger is process-wide, so
+    concurrent calls from several threads share one level -- the last to
+    start wins until it finishes.
     """
-    root = logging.getLogger()
+    package = logging.getLogger(_PACKAGE_LOGGER)
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(logging.Formatter(_LOG_FORMAT))
-    previous = root.level
-    root.addHandler(handler)
-    root.setLevel(_log_level(args))
+    previous = (package.level, package.propagate)
+    package.addHandler(handler)
+    package.setLevel(_log_level(args))
+    package.propagate = False
     try:
         yield
     finally:
-        root.removeHandler(handler)
-        root.setLevel(previous)
+        package.removeHandler(handler)
+        package.setLevel(previous[0])
+        package.propagate = previous[1]
         handler.close()
 
 

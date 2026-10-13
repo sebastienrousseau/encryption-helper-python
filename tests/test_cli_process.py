@@ -108,7 +108,7 @@ class TestRepeatedInProcessCalls:
         real = _commands._capabilities
 
         def capabilities():
-            seen.append(logging.getLogger().getEffectiveLevel())
+            seen.append(logging.getLogger("encryption_helper").getEffectiveLevel())
             logging.getLogger("encryption_helper.probe").debug("probe-debug")
             return real()
 
@@ -126,9 +126,45 @@ class TestRepeatedInProcessCalls:
 
     def test_logging_is_restored_after_the_call(self, probe):
         root = logging.getLogger()
-        before = (root.level, list(root.handlers))
+        package = logging.getLogger("encryption_helper")
+
+        def state():
+            return (
+                root.level,
+                list(root.handlers),
+                package.level,
+                list(package.handlers),
+                package.propagate,
+            )
+
+        before = state()
         assert main(["-vv", "capabilities"]) == EXIT_OK
-        assert (root.level, list(root.handlers)) == before
+        assert state() == before
+
+    def test_a_host_with_logging_configured_sees_each_record_once(self, probe, capsys):
+        """The CLI's handler and the host's must not both print a record.
+
+        Adding a handler to the root logger, beside one the host had already
+        installed, printed every record twice. The CLI now configures only
+        the package's own logger, and stops propagation while it runs.
+        """
+        records: list[logging.LogRecord] = []
+
+        class Host(logging.Handler):
+            def emit(self, record):
+                records.append(record)
+
+        host = Host()
+        root = logging.getLogger()
+        root.addHandler(host)
+        try:
+            assert main(["-vv", "capabilities"]) == EXIT_OK
+        finally:
+            root.removeHandler(host)
+        err = capsys.readouterr().err
+        assert err.count("probe-debug") == 1
+        assert not [r for r in records if r.getMessage() == "probe-debug"]
+        assert root.level == logging.WARNING
 
     def test_json_mode_does_not_outlive_its_call(self, tmp_path, capsys):
         from encryption_helper.cli._output import emit_error
