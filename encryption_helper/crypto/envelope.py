@@ -614,10 +614,12 @@ def decrypt(
         The original plaintext.
 
     Raises:
-        InvalidArgumentError: If ``private_key`` is not an RSA private key.
-        DecryptionError: If the container is malformed, was encrypted to a
-            different key, or has been tampered with. The plaintext is never
-            returned in this case, not even partially.
+        InvalidArgumentError: If ``private_key`` cannot decrypt, or
+            ``associated_data`` exceeds the one-shot limit.
+        DecryptionError: If the container is malformed (including larger
+            than :func:`encrypt` can produce), was encrypted to a different
+            key, or has been tampered with. The plaintext is never returned
+            in this case, not even partially.
 
     Example:
         >>> from encryption_helper.keys.generate import generate_rsa
@@ -626,6 +628,15 @@ def decrypt(
         b'secret'
     """
     header, kem_id, encapsulation, nonce, ciphertext = _parse(blob)
+    if len(ciphertext) > _MAX_ONE_SHOT_SIZE + _TAG_SIZE:
+        # encrypt() never writes one; AES-GCM would raise OverflowError.
+        msg = (
+            f"Ciphertext of {len(ciphertext)} bytes exceeds the one-shot limit, "
+            "so encrypt() did not produce it. A large file is decrypted with "
+            "decrypt_stream()."
+        )
+        raise DecryptionError(msg)
+    _require_one_shot_size(b"", associated_data)
     content_key = _decapsulate(private_key, kem_id, encapsulation)
     try:
         return AESGCM(content_key).decrypt(

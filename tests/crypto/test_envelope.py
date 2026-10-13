@@ -464,6 +464,29 @@ class TestOneShotSizeLimit:
             encrypt(x25519_key.public_key(), b"x", associated_data=_LongBytes(b"x"))
 
 
+    def test_an_oversized_container_is_a_decryption_error(
+        self, x25519_key, monkeypatch
+    ):
+        """A crafted container past the limit must not raise OverflowError.
+
+        encrypt() never writes one, so on decryption it is malformed input,
+        refused before any key work.
+        """
+        blob = encrypt(x25519_key.public_key(), b"x" * 64)
+        monkeypatch.setattr(envelope, "_MAX_ONE_SHOT_SIZE", 16)
+        monkeypatch.setattr(
+            envelope,
+            "_decapsulate",
+            lambda *a: pytest.fail("decapsulated an oversized container"),
+        )
+        with pytest.raises(DecryptionError, match="decrypt_stream"):
+            decrypt(x25519_key, blob)
+
+    def test_oversized_associated_data_on_decryption_is_refused(self, x25519_key):
+        blob = encrypt(x25519_key.public_key(), b"x")
+        with pytest.raises(InvalidArgumentError, match="ssociated data"):
+            decrypt(x25519_key, blob, associated_data=_LongBytes(b"x"))
+
 class TestOneShotMemory:
     """Decryption hands AES-GCM a view of the ciphertext, not a copy of it.
 
