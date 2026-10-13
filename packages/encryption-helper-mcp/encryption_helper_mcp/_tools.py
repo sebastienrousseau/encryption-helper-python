@@ -28,16 +28,17 @@ Two properties are enforced rather than documented:
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, cast
 
 from encryption_helper.crypto.metadata import HEADER_SIZE, describe_container
 from encryption_helper.errors import EncryptionHelperError
-from encryption_helper.inventory import scan, summarise
+from encryption_helper.inventory import scan_report
 from encryption_helper.keys import fingerprint_sha256, load_public_key
 from encryption_helper.keys.load import MAX_KEY_FILE_BYTES
 from encryption_helper.policy import assess, horizon, inventory
@@ -48,6 +49,18 @@ __all__ = ["TOOLS", "Tool", "ToolError", "call", "descriptors"]
 #: it may ask for. Each finding is a few hundred bytes of a model's context.
 DEFAULT_SCAN_LIMIT: Final = 200
 MAX_SCAN_LIMIT: Final = 2000
+
+#: Most files and directories one scan examines, and the most seconds it
+#: walks. A scan used to walk the whole tree it was pointed at; 100,000
+#: entries is about a second and a half of work measured on Linux, far past
+#: any key directory, and well short of a scan of ``/``.
+MAX_SCAN_ENTRIES: Final = 100_000
+SCAN_TIME_BUDGET: Final = 30.0
+
+#: Most bytes of serialised findings in one response. The count limit alone
+#: does not bound it: a finding carries its path and a certificate's
+#: subject, either of which can be kilobytes long.
+MAX_FINDINGS_BYTES: Final = 1024 * 1024
 
 #: Added to the flags ``open()`` derives from its mode. Non-blocking, so a
 #: FIFO cannot stall the open; no-follow, so a link swapped in after the path
@@ -237,14 +250,30 @@ def _scan_directory(root: Path, arguments: dict[str, Any]) -> dict[str, Any]:
     ):
         msg = f"argument 'limit' must be an integer from 1 to {MAX_SCAN_LIMIT}."
         raise ToolError(msg)
-    findings = scan([path])
-    return {
-        "root": str(path),
-        "summary": summarise(findings),
-        "findings": [finding.as_dict() for finding in findings[:limit]],
-        "truncated": len(findings) > limit,
-        "horizon": horizon(),
-    }
+    report = scan_report(
+        [path],
+        limit=limit,
+        max_entries=MAX_SCAN_ENTRIES,
+        time_budget=SCAN_TIME_BUDGET,
+    )
+    findings = cast("list[dict[str, Any]]", report["findings"])
+    kept = _within_bytes(findings, MAX_FINDINGS_BYTES)
+    if len(kept) < len(findings):
+        report["findings"] = kept
+        report["truncated"] = True
+    return {"root": str(path), **report}
+
+
+def _within_bytes(items: list[dict[str, Any]], budget: int) -> list[dict[str, Any]]:
+    """The longest prefix of ``items`` whose JSON fits in ``budget`` bytes."""
+    kept: list[dict[str, Any]] = []
+    used = 2  # the brackets
+    for item in items:
+        used += len(json.dumps(item).encode("utf-8")) + 2  # and a separator
+        if used > budget:
+            break
+        kept.append(item)
+    return kept
 
 
 def _fingerprint_public_key(root: Path, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -350,7 +379,11 @@ TOOLS: Final = (
             "filename. Symbolic links are not followed and no passphrase is "
             "requested, so an encrypted private key is reported as needing "
             "manual review rather than being unlocked. Gate on "
-            "summary.needs_attention rather than summary.action_required."
+            "summary.needs_attention rather than summary.action_required. "
+            f"One call examines at most {MAX_SCAN_ENTRIES:,} files and "
+            f"directories and runs at most {SCAN_TIME_BUDGET:g} seconds; if "
+            "either stops it, 'incomplete' says so and a narrower path "
+            "examines the rest."
         ),
         schema={
             "type": "object",

@@ -184,3 +184,47 @@ class TestUndecodableMessages:
         assert first["error"]["code"] == PARSE_ERROR
         assert first["id"] is None
         assert second == {"jsonrpc": "2.0", "id": 9, "result": {}}
+
+
+class TestScanBudget:
+    """One scan_directory call must cost a bounded walk and a bounded answer.
+
+    The scan walked the whole tree and held every finding before truncating,
+    so cost and response grew with whatever the model pointed it at.
+    """
+
+    def _keys(self, directory, count):
+        public = encode_public_key(generate("ed25519").public_key())
+        for i in range(count):
+            (directory / f"{i:04}.pub").write_bytes(public)
+
+    def test_the_walk_stops_at_the_entry_budget(self, tmp_path, monkeypatch):
+        self._keys(tmp_path, 12)
+        monkeypatch.setattr(_tools, "MAX_SCAN_ENTRIES", 5)
+        result = call(tmp_path, "scan_directory", {"path": "."})
+        assert result["summary"]["examined"] == 5
+        assert "5 entries" in result["incomplete"]
+
+    def test_the_walk_stops_at_the_time_budget(self, tmp_path, monkeypatch):
+        self._keys(tmp_path, 5)
+        monkeypatch.setattr(_tools, "SCAN_TIME_BUDGET", 1e-9)
+        result = call(tmp_path, "scan_directory", {"path": "."})
+        assert "seconds" in result["incomplete"]
+
+    def test_a_complete_scan_says_nothing_about_budgets(self, tmp_path):
+        self._keys(tmp_path, 3)
+        result = call(tmp_path, "scan_directory", {"path": "."})
+        assert "incomplete" not in result
+        assert result["truncated"] is False
+
+    def test_the_findings_are_capped_in_bytes_as_well_as_count(
+        self, tmp_path, monkeypatch
+    ):
+        """A long path or subject per finding must not multiply the answer."""
+        self._keys(tmp_path, 40)
+        monkeypatch.setattr(_tools, "MAX_FINDINGS_BYTES", 2000)
+        result = call(tmp_path, "scan_directory", {"path": ".", "limit": 40})
+        assert 0 < len(result["findings"]) < 40
+        assert len(json.dumps(result["findings"])) <= 2000
+        assert result["truncated"] is True
+        assert result["summary"]["examined"] == 40
