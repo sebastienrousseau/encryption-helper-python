@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import logging
 import sys
@@ -76,6 +77,59 @@ def _read_input(source: str, *, max_size: int = DEFAULT_MAX_INPUT_BYTES) -> byte
         _fail_usage(
             f"{path} exceeds the {max_size}-byte limit. Raise --max-size if "
             "you have the memory for roughly four times that."
+        )
+
+
+def _output_destination(args: argparse.Namespace) -> str:
+    """Where ``--out`` sends data: the path given, or ``-`` for stdout.
+
+    The flag's parsed default is :data:`None`, not ``-``, so that
+    :func:`_refuse_secret_on_terminal` can tell "the user wrote ``--out -``"
+    from "the user said nothing". Both mean stdout.
+    """
+    output: str | None = args.output
+    return _STDIO if output is None else output
+
+
+def _stdout_is_terminal() -> bool:
+    """Whether stdout is attached to a terminal.
+
+    Defensive about the stream itself: an embedding host may have replaced
+    ``sys.stdout`` with something that has no ``isatty`` or is closed, and
+    neither of those is a terminal.
+    """
+    isatty = getattr(sys.stdout, "isatty", None)
+    if isatty is None:
+        return False
+    try:
+        return bool(isatty())
+    except ValueError:  # a closed stream
+        return False
+
+
+def _refuse_secret_on_terminal(args: argparse.Namespace, what: str) -> None:
+    """Refuse to put a secret on a terminal unless ``--out -`` asked for it.
+
+    ``--out`` defaults to stdout so that pipelines need no flag. But at an
+    interactive shell the same default printed decrypted plaintext or a
+    private key onto the screen -- into scrollback, terminal logs, screen
+    sharing and recordings -- without the user ever saying so. Only that
+    case is refused: a pipe or a file behaves exactly as before, and an
+    explicit ``--out -`` is taken as the consent it is. Called before any
+    key is loaded, so the user is not asked for a passphrase first.
+
+    Args:
+        args: Parsed arguments of a command with ``--out``.
+        what: What would have been written, for the message.
+
+    Raises:
+        SystemExit: With :data:`EXIT_USAGE` when the default output is a
+            terminal.
+    """
+    if args.output is None and _stdout_is_terminal():
+        _fail_usage(
+            f"Refusing to write {what} to a terminal. Use --out FILE, pipe "
+            "the output, or pass --out - to force it."
         )
 
 

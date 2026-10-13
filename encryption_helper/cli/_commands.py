@@ -70,8 +70,10 @@ from ._progress import _make_progress
 from ._streams import (
     _input_stream,
     _is_streaming_container,
+    _output_destination,
     _output_stream,
     _read_input,
+    _refuse_secret_on_terminal,
     _write_output,
 )
 from ._warn import _warn_if_inside_git_worktree
@@ -291,9 +293,10 @@ def _cmd_keygen(args: argparse.Namespace) -> int:
 def _cmd_encrypt(args: argparse.Namespace) -> int:
     """Encrypt data to a public key, streaming so memory stays bounded."""
     public_key = load_public_key_file(args.public_key)
+    output = _output_destination(args)
     with (
         _input_stream(args.input) as source,
-        _output_stream(args.output, mode=PUBLIC_FILE_MODE, force=args.force) as (
+        _output_stream(output, mode=PUBLIC_FILE_MODE, force=args.force) as (
             destination,
             reported,
         ),
@@ -308,7 +311,7 @@ def _cmd_encrypt(args: argparse.Namespace) -> int:
         )
         if reporter is not None:
             reporter.finish(written)
-    where = reported[0] if reported else args.output
+    where = reported[0] if reported else output
     _emit(
         args,
         f"Encrypted {written} bytes to {where}",
@@ -324,12 +327,14 @@ def _cmd_decrypt(args: argparse.Namespace) -> int:
     container is read whole. The header says which, so the caller does not
     have to know.
     """
+    _refuse_secret_on_terminal(args, "decrypted plaintext")
+    output = _output_destination(args)
     private_key = _load_private_key(args, args.private_key)
 
     if _is_streaming_container(args.input):
         with (
             _input_stream(args.input) as source,
-            _output_stream(args.output, mode=SECRET_FILE_MODE, force=args.force) as (
+            _output_stream(output, mode=SECRET_FILE_MODE, force=args.force) as (
                 destination,
                 reported,
             ),
@@ -340,7 +345,7 @@ def _cmd_decrypt(args: argparse.Namespace) -> int:
             )
             if reporter is not None:
                 reporter.finish(written)
-        where = reported[0] if reported else args.output
+        where = reported[0] if reported else output
         _emit(
             args,
             f"Decrypted {written} bytes to {where}",
@@ -355,17 +360,17 @@ def _cmd_decrypt(args: argparse.Namespace) -> int:
         len(blob) >= _PEEK_SIZE and blob[_AEAD_ID_OFFSET] == AEAD_AES_256_GCM_STREAM
     )
     if streaming:
-        with _output_stream(args.output, mode=SECRET_FILE_MODE, force=args.force) as (
+        with _output_stream(output, mode=SECRET_FILE_MODE, force=args.force) as (
             destination,
             reported,
         ):
             written = decrypt_stream(private_key, io.BytesIO(blob), destination)
-        where = reported[0] if reported else args.output
+        where = reported[0] if reported else output
     else:
         plaintext = decrypt(private_key, blob)
         written = len(plaintext)
         where = _write_output(
-            args.output, plaintext, mode=SECRET_FILE_MODE, force=args.force
+            output, plaintext, mode=SECRET_FILE_MODE, force=args.force
         )
     _emit(
         args,
@@ -380,7 +385,7 @@ def _cmd_sign(args: argparse.Namespace) -> int:
     private_key = _load_private_key(args, args.private_key)
     signature = sign(private_key, _read_input(args.input, max_size=args.max_size))
     where = _write_output(
-        args.output, signature, mode=PUBLIC_FILE_MODE, force=args.force
+        _output_destination(args), signature, mode=PUBLIC_FILE_MODE, force=args.force
     )
     _emit(
         args,
@@ -412,6 +417,7 @@ def _cmd_fingerprint(args: argparse.Namespace) -> int:
 def _cmd_convert(args: argparse.Namespace) -> int:
     """Convert a key between PEM, DER and OpenSSH encodings."""
     if args.private:
+        _refuse_secret_on_terminal(args, "a private key")
         # The output keeps the input's protection: an encrypted key is
         # re-encrypted under the same passphrase, and an unencrypted one stays
         # as it was. This used to write passphrase=None unconditionally, so
@@ -427,7 +433,7 @@ def _cmd_convert(args: argparse.Namespace) -> int:
         data = encode_public_key(load_public_key_file(args.input), fmt=args.to)
         mode = PUBLIC_FILE_MODE
 
-    where = _write_output(args.output, data, mode=mode, force=args.force)
+    where = _write_output(_output_destination(args), data, mode=mode, force=args.force)
     _emit(args, f"Wrote {args.to} key to {where}", {"output": where, "format": args.to})
     return EXIT_OK
 

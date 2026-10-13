@@ -221,14 +221,18 @@ def _emit(args: argparse.Namespace, human: str, payload: dict[str, Any]) -> None
     """Write a result as either human text or JSON.
 
     Reports normally go to stdout so they can be piped. The exception is when
-    stdout is already carrying the command's data (``--out -``, the default
-    for every command that produces data): appending a report to ciphertext,
-    plaintext, a signature or a key corrupts it, so the report moves to
-    stderr and stdout stays pure. This applies to the human-readable line
-    exactly as it does to JSON -- ``encrypt > file.enc`` is the documented
-    pipeline, and it must produce a decryptable file without ``-q``.
+    stdout is already carrying the command's data (``--out -``, or no
+    ``--out`` at all, which means the same for every command that produces
+    data): appending a report to ciphertext, plaintext, a signature or a
+    key corrupts it, so the report moves to stderr and stdout stays pure.
+    This applies to the human-readable line exactly as it does to JSON --
+    ``encrypt > file.enc`` is the documented pipeline, and it must produce
+    a decryptable file without ``-q``.
     """
-    stream = sys.stderr if getattr(args, "output", None) == _STDIO else sys.stdout
+    # A command without --out has no `output` at all; one with it holds
+    # None (the default, stdout) or the value given.
+    carries_data = "output" in vars(args) and args.output in {None, _STDIO}
+    stream = sys.stderr if carries_data else sys.stdout
     if args.json:
         _write_json(
             envelope(getattr(args, "command", None), payload, status="ok"), stream

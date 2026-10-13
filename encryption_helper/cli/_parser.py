@@ -177,7 +177,10 @@ def _add_io_flags(parser: argparse.ArgumentParser, *, output: bool = True) -> No
         parser.add_argument(
             "--out",
             dest="output",
-            default=_STDIO,
+            # None rather than "-": both mean stdout, but only an explicit
+            # "-" consents to a secret being written to a terminal. Read it
+            # through _streams._output_destination.
+            default=None,
             metavar="PATH",
             help="Output file, or - for stdout (default: stdout).",
         )
