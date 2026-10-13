@@ -1,0 +1,666 @@
+# Changelog
+
+All notable changes to this project are documented here.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Security
+
+- **One message can no longer stop the MCP server.** JSON nested deeper
+  than the interpreter stack, or an integer over 4,300 digits, raised out of
+  `serve()` and ended the process. Each is now one parse error.
+- **An interrupted key write no longer loses the key.** Ctrl-C or SIGTERM
+  while `secure_write_bytes` replaced a file left no file at the
+  destination, the old key in a backup and the new one in a temporary file;
+  an interrupt during the public half of `write_key_pair` left a private
+  key with no public key. `secure_write_bytes` is now the streaming writer, which
+  already handled this, and the pair rolls back on any interruption.
+- **scrypt-protected keys are held to a cost ceiling**, as PBKDF2 ones
+  already were. A crafted key cost 17 s per load attempt, wrong passphrase
+  or not, and the cost was the file's to choose. Keys above N=2^20, r=8,
+  p=1 of work or 1 GiB of memory are refused before any derivation.
+- **A scan reads what its walk found.** Replacing a directory, or a parent
+  above it, with a link mid-scan redirected the scan outside the tree; each
+  entry's device and inode are now confirmed when it is opened.
+- **The MCP server no longer reveals what exists outside its root.** A path
+  outside the root is refused with one message whether or not it exists,
+  and `~` is not expanded. Non-string and NUL-containing paths are refused
+  as correctable errors.
+- **The MCP `scan_directory` tool is bounded**: 100,000 entries, 30
+  seconds and 1 MiB of findings per call, with `incomplete` saying when a
+  bound stopped it.
+- **`decrypt` and `convert --private` refuse to print to a terminal**
+  unless `--out -` is given, so plaintext and private keys do not land in
+  scrollback or terminal logs. Pipes and files are unaffected.
+- `cryptography` is now `>=50.0.0,<51.0.0`. 48.0.0 carried seven OSV
+  advisories, including one in its bundled OpenSSL; 50.0.0 carries none.
+- The published wheel is built with a hash-pinned build backend
+  (`--no-isolation`), and every CI tool is installed from
+  `requirements/ci.txt` with hashes. Pre-commit hooks are pinned to commits.
+
+### Fixed
+
+- One crafted certificate no longer aborts an inventory scan: a certificate
+  whose key cannot be loaded is an undetermined finding, and any other
+  failure to interpret a file is an `unreadable` finding for that file.
+- A scan root that is missing, a dangling link or a FIFO is reported as
+  `unreadable` instead of scanning as empty, so a gate over it cannot pass
+  having examined nothing.
+- `encrypt` and `decrypt` raise `InvalidArgumentError` / `DecryptionError`
+  past the AES-GCM 2 GiB limit, not a bare `OverflowError`, and
+  `decrypt_stream` bounds its segment count as `encrypt_stream` does.
+- With `--json`, argparse usage errors and the unencrypted-key refusal are
+  JSON on stderr like every other error.
+- A command whose reader closes the pipe early exits `141`, not `0`.
+- Calling `main()` repeatedly in one process honours each call's flags, and
+  a host with logging configured sees each record once.
+- Intermediate directories created for a secret file get the secret
+  directory mode, not the umask default. Backup names carry a random
+  component; a rollback never overwrites a file another process created;
+  only "hard links unsupported" falls back to the rename commit.
+- `describe_key` names X448 keys; every module reads one key-type table.
+- `decrypt_stream` holds three segments at a time, as documented, rather
+  than four, and one-shot `decrypt` no longer copies the ciphertext.
+  Memory figures in the docstrings and CLI messages are now measured ones.
+- The RSA wrong-length content-key error uses the uniform decryption
+  message.
+
+### Added
+
+- `decrypt_stream(..., max_segment_size=...)`, so a reader of untrusted
+  containers can cap the segment size it will allocate; `encrypt_stream`
+  and `decrypt_stream` are exported from the package root.
+- `read_regular_file(path, limit, *, prefix=False)`: a non-blocking,
+  no-follow, regular-file-only, bounded read, now used by the MCP server
+  instead of its own copy of the platform open flags.
+- `inventory.scan_report()` and `inventory.build_report()`: the scan report
+  the CLI and the MCP server share, with optional bounds.
+- `encryption_helper.cli.EXIT_BROKEN_PIPE`.
+
+### Documented
+
+- AES-GCM is not key-committing: an X25519 sender can make one container
+  decrypt to different plaintexts for different recipients. Sign the
+  plaintext where that matters.
+- ECDSA signatures are malleable; do not use their bytes as an identifier.
+- Passphrases and decrypted keys are immutable `bytes` and cannot be
+  zeroised in Python.
+
+### Fixed (earlier in this cycle)
+
+- **Platform differences live in one adapter, and the permission claims are
+  now true.** `sys.platform` and `os.name` checks were spread over three
+  modules; they are now in `encryption_helper._platform`, and a test fails
+  if one appears elsewhere. The docs promised "0600 inside a 0700
+  directory", but the directory mode only applied to directories this
+  package created, and on Windows nothing is owner-only: a file inherits
+  its folder's ACL. Writing secret material now logs a warning when the
+  directory is writable by other users (sticky directories such as `/tmp`
+  excepted), and the README and docstrings say what Windows actually does.
+  A failing `fchmod` no longer leaks the temporary file's descriptor.
+- **New signatures need 112-bit strength, like encryption already did.**
+  `sign` accepted an RSA key of any size, and ECDSA on a curve outside
+  P-256, P-384 and P-521 fell back to SHA-256 -- a 512-bit Brainpool key
+  signed at 128-bit collision strength. `sign` now refuses RSA below 2048
+  bits (`InvalidArgumentError`) and ECDSA off the NIST curves this package
+  generates (`UnsupportedAlgorithmError`). `verify` still accepts them, as
+  NIST SP 800-131A allows for legacy use, so existing signatures can still
+  be checked.
+- `describe_container` reported a container with a non-zero reserved byte as
+  `readable`, though both readers reject it. It now asks the readers' own
+  header validator instead of restating its rules.
+- **`scan` no longer passes over what it cannot read.** An unreadable file
+  or directory was dropped without trace, so `scan --fail-on-finding` could
+  exit 0 over a key it never opened. Each is now an `unreadable` finding
+  that counts as needing attention. Files are opened without blocking or
+  following a link, so a FIFO or link swapped in after the walk saw a
+  regular file can no longer stall or redirect the scan. The walk is
+  iterative: `os.walk` recursed on Python 3.10 and 3.11, and a deep tree
+  aborted the scan with `RecursionError`. A path the caller names is now
+  scanned whether or not it is a link (a linked file used to be skipped
+  while a linked directory was walked); links beneath it are still never
+  followed. The text report says "N found" rather than "N examined", which
+  overstated what `examined` counts.
+- **The MCP server can no longer be stalled or flooded by one request.** It
+  is single-threaded, so a stuck call ends the session. `inspect_container`
+  and `fingerprint_public_key` on a FIFO inside the root blocked forever;
+  they now open without blocking or following a link swapped in after the
+  path was confined, and refuse anything but a regular file.
+  `fingerprint_public_key` reads at most 1 MiB. `scan_directory` returns at
+  most `limit` findings (default 200, at most 2,000) with a `truncated`
+  flag; the summary still covers every finding. The 4 MiB message cap was
+  checked only after the whole line was buffered, and in characters; it is
+  now enforced while reading, in bytes, and the session continues after an
+  oversized message. The server's description no longer claims it never
+  reads a private key: a scan does, to report the algorithm, and returns
+  nothing else.
+- **Every read of caller-named input is bounded by the bytes read.** The CLI
+  checked `stat().st_size` and then read the whole file, but a FIFO, a
+  device or `<(cmd)` reports a size of 0: `--in <(cmd)` and
+  `--passphrase-file /dev/zero` read without limit. `--max-size` accepted
+  negative values, and `-2` became `read(-1)`. Key and signature files had
+  no limit at all. All of them now read at most one byte past their limit
+  (1 MiB for key and signature files), and `--max-size` must be at least 1.
+- **An encrypted key can no longer demand unbounded work from its loader.**
+  The PBKDF2 iteration count of a PKCS#8 key and the bcrypt round count of
+  an OpenSSH key are read from the file; a crafted key asking for 2^31
+  iterations costs about three minutes of CPU per attempt. Keys above
+  10,000,000 iterations or 1,000 rounds are refused before any derivation
+  runs -- more than sixteen times what this package writes, and well above
+  ssh-keygen's default of 16.
+- **Losing a write race no longer orphans the new private key.** When another
+  process created the destination between the backup and the commit,
+  `secure_write_bytes` raised `KeyExistsError` -- which its cleanup handlers,
+  catching `OSError` and `KeyWriteError`, never saw. The temporary file with
+  the complete new key stayed in the directory, and the original stayed at
+  its `.bak-` name with nothing saying so. The temporary file is now removed,
+  the other process's file is never replaced (the streaming writer used to
+  replace it during rollback), and the error names where the original is.
+- **The dependency audit now audits the dependencies.** CI ran a bare
+  `pip-audit`, which scans the job's own environment -- the scanners -- and
+  never saw `cryptography`, so a published advisory against the pinned
+  version could not fail the build. It now audits each hash-locked
+  requirements file, runs weekly as well as on push, and installs bandit and
+  pip-audit from the new hash-locked `requirements/audit.txt` instead of
+  unpinned.
+- **`requirements/release.in` and `build-backend.in` named no packages.** The
+  committed locks still held every pin, so nothing failed, but the next
+  `scripts/compile_requirements.py` run would have written empty locks. The
+  script also copied absolute and temporary paths into the generated
+  comments; paths are now relative and stable.
+- **The streaming reader rejects a content key of the wrong length.** RSA-OAEP
+  returns whatever the sender wrapped, and `decrypt_stream` passed it straight
+  to AES-GCM: a container carrying a 128-bit key decrypted successfully, and a
+  key of an invalid size escaped as a bare `ValueError` instead of
+  `DecryptionError`. The length check the one-shot reader already had now
+  lives in decapsulation, so both readers share it.
+- **Writing to stdout no longer corrupts the output.** Without `-q` or
+  `--json`, `encrypt`, `decrypt`, `sign` and `convert` appended their
+  human-readable report (`Encrypted N bytes to <stdout>`) to the data on
+  stdout, so the documented `… | encryption-helper encrypt … > file.enc`
+  pipeline produced a file that failed its integrity check. When stdout
+  carries data the report now goes to stderr, as the JSON report already
+  did. **Files produced this way by earlier builds are recoverable**: strip
+  the trailing report line, which is plain ASCII after the last segment.
+- **`encrypt_stream` no longer writes undecryptable containers from
+  short-reading sources.** It used a plain `read(segment_size)`, and a raw
+  file, socket or custom stream may return fewer bytes than asked before its
+  end. Interior segments then came out short, encryption reported success,
+  and decryption -- which splits at fixed boundaries -- rejected segment 0.
+  Reads are now exact, and writes to raw streams that accept data in parts
+  are completed instead of silently truncated. Containers written by earlier
+  builds from ordinary files and pipes are unaffected.
+- **The streaming reader now rejects unknown key-encapsulation identifiers.**
+  It had its own copy of the header checks, which had drifted from the
+  one-shot reader's and never checked `kem_id`; an unknown identifier fell
+  through to the X25519 path. Both readers now share one validator, and
+  decapsulation fails closed rather than defaulting to a mechanism.
+- **`inspect` and `scan` no longer call an unrecognised mechanism safe.**
+  Quantum posture was a deny-list, so any key-establishment identifier this
+  build did not know was reported as not vulnerable and `inspect` printed
+  "No migration is required." Posture is now an allow-list:
+  `quantum_vulnerable` is `null` for an unknown mechanism, the report says
+  it cannot be established, and `scan` counts it as needing attention.
+- `scan` records a file with the container magic but an incomplete header
+  as a finding, instead of abandoning the whole inventory on it.
+- `readable` in `inspect` output is true only when this build can decrypt
+  the container. It was `version <= current`, so version 0 claimed to be
+  readable.
+- **`scan --fail-on-finding` can no longer be passed by a mistyped path.**
+  A path that did not exist was treated as an empty tree, so the gate
+  printed "No recognised cryptographic material found" and exited 0. It is
+  now a usage error (exit 2). Findings exit with a new code, 5, instead of
+  1, so a pipeline can tell "the tree has findings" from "the scanner
+  failed"; the JSON result remains a normal `status: ok` document.
+- **`keygen --name` can no longer write outside `--out-dir`.** The stem was
+  joined to the directory unchecked, so `--name ../escaped` wrote the pair
+  one level up, and an empty or `.` name produced hidden files. The stem
+  must now be a single filename component; `write_key_pair()` enforces
+  this for library callers too.
+- **`convert --private` keeps a key's passphrase protection.** It always
+  wrote the output unencrypted, even with `--passphrase-env` supplied. An
+  encrypted key is now re-encrypted under the same passphrase; removing
+  protection takes the new, explicit `--unencrypted` flag.
+- **`--force` on `encrypt` and `decrypt` now really backs up the file it
+  replaces.** Streamed output had its own write path, which renamed over
+  the target while the message promised a backup. All file output now goes
+  through one hardened writer (`secure_write_stream`, alongside
+  `secure_write_bytes`): the backup is taken only once the new content is
+  complete and restored if the commit fails; a symlinked destination is
+  refused (devices such as `/dev/null` and `/dev/stdout` are still written
+  through); new directories are `0700`; and the directory is synced.
+- **A file created during a write is no longer overwritten.** Both writers
+  checked that the destination was absent and later renamed over it; the
+  commit is now a hard link, which fails if the name has been taken.
+- **SIGTERM no longer leaves partial plaintext behind.** The default
+  disposition killed the process without cleanup, leaving `decrypt`'s
+  hidden temporary file in the destination directory. The CLI now unwinds
+  on SIGTERM (exit 143), and the writer removes the file.
+- **Passphrase-protected keys are about 290 times harder to guess.**
+  `cryptography`'s `BestAvailableEncryption` protects PKCS#8 with PBKDF2 at
+  2,048 iterations, and offers no way to raise it. PEM and DER keys are now
+  written as the same standard PBES2 structure at 600,000 iterations of
+  PBKDF2-HMAC-SHA256 with AES-256-CBC, readable by OpenSSL and every
+  mainstream PKCS#8 reader. Existing keys still load, with a warning;
+  `convert --private` re-protects them. PBKDF2 was chosen over scrypt
+  because OpenSSL's default scrypt memory cap would reject a
+  recommended-strength scrypt key. Unlocking a key now takes about 0.1 s.
+- `keygen --format openssh` with a passphrase no longer crashes with
+  "unexpected internal error" when the optional `bcrypt` package is absent;
+  it reports that `bcrypt` is needed, or that `pem`/`der` can be used.
+- **Signatures use a hash matched to the key's strength.** Every signature
+  used SHA-256, capping P-384, P-521 and RSA-3072+ at 128-bit collision
+  resistance and falling short of CNSA. ECDSA now uses SHA-384 on P-384
+  and SHA-512 on P-521; RSA-PSS uses SHA-384 from 3072 bits. Signing is new
+  in this release, so no published signature is affected.
+- **Encrypting to a broken RSA key is refused.** RSA-1024 recipients, which
+  NIST SP 800-131A has disallowed for key transport since 2013, and public
+  exponents below 65537 were accepted. Decrypting existing data is
+  unaffected. `generate_rsa` no longer accepts `public_exponent=3`.
+- **Operating-system failures are reported as such.** A full disk, a
+  read-only directory or a missing permission printed a traceback and
+  "unexpected internal error ... please report this". They are now one line
+  naming the reason and the path, exit 1. Genuinely unexpected errors log
+  their traceback at DEBUG only; `logger.exception` logged at ERROR, which
+  is shown by default.
+- An encrypted key loaded without a passphrase now says so, instead of
+  suggesting the file may be corrupt. A wrong passphrase remains
+  deliberately indistinguishable from a corrupt file.
+- Messages name algorithms ("an Ed25519 key", "an RSA-2048 key") rather
+  than Python classes ("a Ed25519PublicKey").
+- **`scan` finds the private keys `keygen` writes in every format.** DER
+  private keys carry no PEM banner and were not found at all; OpenSSH
+  private keys were parsed with the PEM loader and reported as
+  unparseable. Both are now identified, and protected ones reported as
+  encrypted. RSA key validation is skipped while scanning -- only the public
+  half's size is read -- which made each RSA private key cost about 77 ms.
+- **Migration dates now follow security strength, as NIST's do.** Every
+  classical algorithm was reported as "deprecated 2030, disallowed 2035".
+  That is correct only for 112-bit keys such as RSA-2048 and P-224. It
+  overstated the urgency for RSA-3072/4096, P-256/384/521, Ed25519, Ed448 and
+  X25519, which NIST IR 8547 (initial public draft) moves straight to
+  disallowed after 2035. It also understated it for weak keys found by
+  `scan`: RSA-1024 and P-192 were given a 2030 date, although NIST SP
+  800-131A has disallowed them since the end of 2013. `assess`, `scan`,
+  `capabilities`, the keygen notice and the MCP tools all take their dates
+  from the corrected policy. **Inventories produced by earlier builds should
+  be regenerated.**
+- `sign` and `convert` reported an object representation instead of the
+  output path, in both the human-readable line and the JSON `output` field.
+- `inspect` and `scan` no longer describe a post-quantum container as "not
+  vulnerable to a quantum computer". They now state that it uses a NIST
+  post-quantum standard, which is what is actually known.
+- `scripts/sandbox.sh` wrote first-use build output to stdout, corrupting
+  piped output. It now goes to stderr.
+- `.dockerignore` key-material patterns matched only at the top level of the
+  build context, so `secrets/service.pem` would have been sent to the build
+  daemon. They now match at any depth.
+
+### Added
+
+- **A release must now pass CI on the tagged commit before it can publish**,
+  and the tag must match the package version. Release and CI build tools
+  (`build`, `twine`, `cyclonedx-bom`) are installed from hashes
+  (`requirements/release.txt`), because they run in the job that produces
+  the published wheel. The SBOM now describes the package -- the wheel and
+  its install closure -- rather than the build runner, and is kept out of
+  `dist/`, which is published verbatim. The container image pins its base by
+  digest and installs every dependency and the build backend from hashes;
+  `requirements/runtime.txt` is held equal to `poetry.lock` by a test.
+  Renovate pins Docker digests and no longer automerges dev tooling.
+- **Known-answer vectors for container version 1** (`tests/vectors/v1.json`):
+  one-shot and streaming containers for every mechanism, written once and
+  never regenerated. Every earlier encryption test was a round trip through
+  the current code, so a change to the KDF `info` string passed all 996 of
+  them while making every existing container unreadable; nine vector tests
+  now fail on that change.
+- `policy.security_strength()`, `NIST_LEGACY_DISALLOWED_FROM`, and
+  `legacy_disallowed_from` in the published horizon. `scan` adds
+  `below_minimum_strength` to its summary, and marks those findings "replace
+  now".
+- Container targets `mcp` and `examples`, selected with
+  `scripts/sandbox.sh --target`. The MCP server sees the host directory
+  read-only. The examples get no host mount. CI builds and exercises all
+  three targets through the wrapper.
+- Examples `10_counterparty_file_exchange.py`, covering out-of-band
+  fingerprint checks and sign-then-encrypt, and `11_mcp_assistant_session.py`.
+- README sections on migration planning, interoperability (the container
+  format is not OpenPGP or CMS), the sandbox, the MCP server and support.
+
+- **Segmented (streaming) encryption**, `aead_id` 2. Encryption previously
+  held the whole payload in memory at roughly four times its size, so a 5 GB
+  file was impossible and the CLI refused anything over 64 MiB. Memory is now
+  bounded by the segment size: measured flat at ~30 MB from 5 MB to 5 GB,
+  sustaining ~1.5 GB/s.
+
+  The framing is **Tink's STREAM**, not a new construction: a 12-byte nonce
+  of 7-byte random prefix, 4-byte segment counter and 1-byte final flag.
+  Together these prevent nonce reuse, reordering, segment dropping and
+  truncation. Truncation resistance is the property naive chunked AEADs lose,
+  and it is tested explicitly along with reordering, duplication and
+  single-byte tampering.
+
+  `encrypt_stream()` and `decrypt_stream()` are the library API. The CLI
+  streams by default and reads either mode, dispatching on the header, so a
+  one-shot container produced by `encrypt()` still decrypts.
+- `--segment-size` to tune the segment, bounded to 4 KiB..64 MiB.
+- `--progress`, reporting bytes, percentage, rate and ETA on stderr while
+  streaming. Throttled to five updates a second: at 1.5 GB/s with 256 KiB
+  segments there are roughly 6,000 callbacks a second, and printing each
+  would cost more than the encryption. Measured overhead is nil. The total is
+  omitted when reading from a pipe rather than guessed, and `--quiet`
+  suppresses it. The library takes a callback and never prints, so `cli.py`
+  remains the only module that writes to a terminal.
+- The CLI commits streamed output atomically: it writes to a temporary file in
+  the destination directory and renames on success, so a failed decryption
+  never leaves a partial plaintext.
+
+- **Post-quantum cryptography.** ML-KEM-768 and ML-KEM-1024 (FIPS 203) for
+  encryption, ML-DSA-44/65/87 (FIPS 204) for signing. NIST IR 8547 (initial
+  public draft) disallows RSA and the elliptic curves after 2035; every
+  algorithm this package previously offered was on that list. No new
+  dependency was needed -- both are in `cryptography` 48+.
+- **X25519** ephemeral-static encryption, as `age` and HPKE do, and **Ed448**
+  signing.
+- Three new container mechanisms alongside RSA-OAEP: `kem_id` 2 (ML-KEM-768),
+  3 (ML-KEM-1024) and 4 (X25519+HKDF-SHA256). The header already carried a
+  mechanism byte and rejected unknown values, so this is additive --
+  `kem_id` 1 containers still decrypt. The identifier is mixed into the HKDF
+  `info`, so one shared secret cannot derive the same content key under two
+  labels.
+- `encryption-helper capabilities` reporting every algorithm, whether it can
+  encrypt or sign, and its NIST IR 8547 horizon. `--json` gives the same for a
+  cryptographic inventory.
+- A notice at generation time when a quantum-vulnerable algorithm is chosen,
+  naming the dates and the post-quantum alternative. A notice, not a refusal:
+  RSA and the curves remain correct and widely interoperable.
+- `--level` for ML-KEM and ML-DSA parameter sets.
+- `--max-size` on the data commands, defaulting to 64 MiB. Encryption is not
+  streamed and peak memory is roughly four times the payload, so oversized
+  input is refused rather than risking an out-of-memory kill mid-write.
+- CycloneDX SBOM generation in CI and attached to releases. This was listed in
+  the original plan and in a commit message, and had never been implemented.
+- `ARCHITECTURE.md`, `DEVELOPMENT.md`, `ROADMAP.md`, `RELEASING.md`,
+  `GOVERNANCE.md`, `MAINTAINERS.md`, `CITATION.cff`, `Makefile`, `.mise.toml`,
+  `MANIFEST.in` and markdown linting.
+
+### Changed
+
+- `__version__` is resolved lazily on first access. `importlib.metadata` costs
+  ~9.5 ms per process to import and was paid by every caller whether or not
+  they asked for the version.
+- `--max-size` now applies only where input must be buffered -- reading a
+  one-shot container, or from a pipe. File streaming is unbounded.
+- README restyled, with a contents index, badge strip and operational
+  sections.
+- Fingerprints for ML-KEM, ML-DSA, X25519 and Ed448 are taken over DER
+  SubjectPublicKeyInfo under a distinct `SHA256-SPKI:` prefix, because those
+  key types have no OpenSSH encoding. RSA, Ed25519 and ECDSA still match
+  `ssh-keygen -lf` byte for byte. The prefixes differ deliberately: digests
+  over different encodings must never look comparable.
+- Error classification is now principled. A key that can never decrypt
+  (Ed25519, Ed448, ECDSA, ML-DSA) raises `InvalidArgumentError` -- a
+  programming mistake. A key that could decrypt but does not match the
+  container raises `DecryptionError`, because that is indistinguishable from a
+  tampered header.
+- `cryptography` is pinned to `>=48.0.0,<51.0.0`. The previous unbounded
+  `>=43.0.0` spanned two years of releases, including ones with known CVEs,
+  and predated ML-KEM. 48 is the first release whose OpenSSL wheels provide
+  ML-KEM and ML-DSA: an earlier draft of this release declared 46, on which
+  the package failed to import, and CI now tests the declared floor exactly.
+- Post-quantum key sizes are reported as "Parameter set", not "Key size":
+  calling ML-KEM-768 "768 bits" would simply be wrong.
+
+### Fixed
+
+- `--out /dev/null` failed with "already exists", and the atomic-commit path
+  would have renamed a temporary file over the device node. Character
+  devices, fifos and sockets are now written through directly, with no
+  existence guard and no rename. Found while testing `--progress` against a
+  discarded output.
+- `--json` with `--out -` interleaved a JSON report and binary output on one
+  stream, leaving neither parseable. The report now moves to stderr when
+  stdout carries the command's output. Previously documented as a known issue.
+
+### Deliberately not done
+
+- **Hybrid X25519+ML-KEM.** A composite KEM needs a composite key container,
+  and inventing one without external cryptographic review would be exactly the
+  false confidence this work is meant to avoid. ML-KEM alone is FIPS-approved
+  and satisfies the horizon. Tracked in `ROADMAP.md`.
+- **Streaming encryption.** The chunked-AEAD design is specified in
+  `ROADMAP.md`; frame counters and truncation resistance are where such
+  designs fail, so it needs test vectors and review rather than a quick
+  implementation. `--max-size` is the interim guard.
+
+- `examples/` -- four runnable, CI-executed examples covering key generation
+  and storage, hybrid encryption, signing, and loading and format conversion.
+- `benches/bench_crypto.py` -- dependency-free benchmarks for generation,
+  encryption, signing, serialisation and storage. Indicative timings, not a
+  regression gate.
+- `fuzz/` -- fuzz targets for `decrypt()` and the key loaders, with a
+  standalone runner needing no fuzzing engine plus optional Atheris entry
+  points. Both harnesses were themselves mutation-tested: planting a defect is
+  detected within two iterations, with a reproducible seed.
+- `scripts/compare_wheel_payload.py` -- release-audit tooling that proves two
+  commits ship byte-identical executable code, by building both from pristine
+  `git archive` exports and comparing every wheel member under
+  `encryption_helper/`. Turns the one-time candidate-isolation check into
+  reproducible evidence. Deliberately not part of normal CI.
+- `scripts/verify-release-candidate.sh --expect <sha>` -- refuses to produce a
+  provenance record for a commit other than the one named, so a record cannot
+  silently describe the wrong commit after a merge.
+- `tests/test_documentation_accuracy.py` -- asserts the README matches the
+  implementation: every documented flag and subcommand exists, exit codes and
+  error tables match the code, the stated key sizes and curves are accepted,
+  cryptographic claims match the constructions used, licence declarations
+  agree, and every relative link resolves.
+
+### Changed
+
+- Test coverage is now 100% of statements and branches, gated at 95%.
+
+### Fixed
+
+- README documented `KeyWriteError` and `KeyReadError` in a single combined
+  table row, so neither was individually described.
+
+
+## [0.0.2] — Unreleased
+
+This release is a rewrite. It hardens how private keys are stored and handled,
+replaces the public API, and adds encryption, signing, format conversion and a
+real command-line interface.
+
+0.0.1 printed and logged generated keys by design, which is reasonable for
+interactive local use. The defaults below are stricter, so the same tool is
+safe to use on shared machines and in CI without changing how you call it.
+
+### Security hardening
+
+- **Private keys are written owner-only.** They are created with `O_EXCL` at
+  mode `0600` inside a `0700` directory, independent of the process umask.
+  0.0.1 used a plain `open()`, which honours the umask and so typically
+  produced `0644` — readable by other local accounts. `0600` matches what
+  `ssh-keygen` does.
+- **Key material is no longer printed or logged by default.** 0.0.1 printed
+  both keys to the console and logged them at DEBUG, both documented features.
+  That suits interactive use, but it also puts key material into terminal
+  scrollback, CI job logs and log-shipping pipelines. The CLI now reports the
+  file path and a SHA-256 fingerprint; pass `--show-public` for the public key
+  on stdout.
+- **Private keys can be encrypted at rest** with a passphrase supplied via
+  `--passphrase-env` or `--passphrase-file`. A passphrase is never accepted as a
+  command-line value, because `argv` is world-readable through `/proc`.
+- **Existing keys are no longer silently destroyed.** Overwriting requires
+  `--force`, and the previous key is backed up to a timestamped `0600` sibling.
+- **Writes are atomic**, so an interrupted run cannot leave a truncated key.
+- **Writing through a symbolic link is refused.**
+- Error messages never contain key material, passphrases, or plaintext, and do
+  not distinguish a wrong passphrase from a corrupt file.
+- **An unencrypted private key is no longer the default.** A passphrase is
+  prompted for without echo when a terminal is present; otherwise the run fails
+  unless `--passphrase-env`, `--passphrase-file` or an explicit
+  `--no-passphrase` is given.
+- **Key pairs are validated before they are written.** The serialised halves are
+  parsed back and compared, so a mismatched pair cannot reach the disk.
+- **A partial write is rolled back.** If the public key cannot be written, the
+  private key just written is removed, or restored from its backup. A private
+  key whose public counterpart is missing or stale never survives.
+- Both destinations are checked before anything is written, so the common
+  "file already exists" conflict is caught before any file is touched.
+- `~` in `--out-dir` is expanded and relative paths are resolved. Previously
+  `--out-dir ~/keys` created a directory literally named `~`.
+- Unexpected exception text is logged rather than printed, so it cannot spill
+  paths or values into a terminal.
+- The user is warned when key material is about to be written inside a git
+  working tree.
+- **A write that fails after backing up its target now restores the backup.**
+  Previously a failed replacement renamed the old file aside and left nothing
+  at the destination: the bytes survived, but the pair was incomplete. The
+  original permission bits are restored too, not just the contents.
+- Destination aliasing is rejected: a symlinked destination, a hard-linked
+  private/public pair, and a private key path with more than one hard link
+  (where the old key would stay readable under the other name).
+- `--passphrase-env` rejects a whitespace-only value, matching the interactive
+  prompt, and never echoes a rejected value.
+- `--passphrase-file` has pinned semantics: exactly one trailing newline is
+  removed and nothing else, so a passphrase may begin or end with a space or
+  contain internal newlines.
+- Custody warnings moved to stderr, so they survive stdout being redirected or
+  parsed as JSON, while `--quiet` still silences them for automation.
+- **`--passphrase-env`, `--passphrase-file` and `--no-passphrase` are mutually
+  exclusive at the parser level.** Previously `--no-passphrase
+  --passphrase-file secret.txt` was accepted, silently discarded the supplied
+  passphrase, and wrote an **unencrypted** key.
+- `--passphrase-file` is capped at 64 KiB, checked before the file is read, so
+  pointing it at a log or a disk image fails as the mistake it is rather than
+  consuming memory.
+- All three passphrase sources converge on a single conversion point. Text
+  sources are UTF-8 encoded there; a file stays byte-exact, so a non-UTF-8
+  secret works and no decode step exists to raise `UnicodeDecodeError`.
+- A group- or world-readable passphrase file produces a warning on POSIX. It is
+  deliberately not a refusal, and is skipped on Windows rather than pretending
+  Unix mode bits describe an ACL.
+- The resolved passphrase is never written back to the argparse namespace, so
+  a future `logger.debug("args=%r", args)` cannot leak it. Pinned by test.
+
+### Added
+
+- Hybrid encryption (`encrypt` / `decrypt`): AES-256-GCM under a random content
+  key wrapped with RSA-OAEP-SHA256, in a versioned, authenticated container.
+  Data of any size can be encrypted.
+- Signing and verification (`sign` / `verify` / `is_valid_signature`) over
+  RSA-PSS, Ed25519 and ECDSA.
+- Ed25519 and ECDSA (P-256, P-384, P-521) key generation.
+- Key loading with PEM/DER/OpenSSH auto-detection.
+- OpenSSH-compatible SHA-256 fingerprints, cross-validated against
+  `ssh-keygen -lf` in the test suite.
+- Format conversion between PEM, DER and OpenSSH.
+- A real command-line interface: `keygen`, `encrypt`, `decrypt`, `sign`,
+  `verify`, `fingerprint`, `convert`, with `--version`, `--json`, verbosity
+  flags and documented exit codes. 0.0.1 accepted no arguments at all.
+- A typed exception hierarchy rooted at `EncryptionHelperError`.
+- `py.typed`, so downstream consumers receive type information.
+- `KeyPairValidationError` for a pair that fails its pre-write self-check.
+- `NOTICE`, and an SPDX `Apache-2.0` header on every source file.
+- `CONTRIBUTING.md`, `CODE-OF-CONDUCT.md`, `CODEOWNERS`, `SUPPORT.md`, issue
+  and pull request templates.
+
+### Changed
+
+- **Breaking:** `generate_rsa_key()` is removed. Use `generate_rsa()`, which
+  returns a key object and performs no I/O, printing or logging. Serialising
+  and writing are separate, explicit steps (`encode_private_key`,
+  `write_key_pair`).
+- **Breaking:** the `Context` singleton is removed. The library now uses a
+  standard module logger with a `NullHandler` and configures nothing; the host
+  application owns logging configuration.
+- **Breaking:** keys are no longer written to a hardcoded `keys/pem/` directory
+  relative to the process working directory. Use `--out-dir`.
+- Default RSA key size raised from 2048 to 3072 bits. `--key-size` is now an
+  allowlist of 2048, 3072 and 4096 rather than a lower bound: the underlying
+  library accepts many sizes that clear the minimum but interoperate poorly.
+- `write_key_pair()` returns a frozen `KeyGenerationResult` carrying paths,
+  algorithm, key size, fingerprint and encryption status — and no secret, so a
+  caller cannot log one by accident.
+- Minimum Python raised to 3.10; 3.8 and 3.9 are end-of-life. Tested on 3.10
+  through 3.14, across Linux, macOS and Windows.
+- Packaging migrated to PEP 621. The version is declared in exactly one place
+  and read via `importlib.metadata`; it was previously duplicated across
+  `__init__.py`, `pyproject.toml` and `setup.py`.
+- `SECURITY.md` replaced — it was the unedited GitHub template, claiming
+  supported versions `5.1.x` and `4.0.x` for a `0.0.1` project.
+- Licence metadata corrected to **Apache-2.0**, matching the `LICENSE` file.
+  `pyproject.toml`, `setup.py` and the README previously all declared MIT while
+  the repository shipped Apache-2.0.
+- README corrected: it documented the private key format as PKCS#1, but the
+  code emits, and always emitted, PKCS#8.
+
+### Removed
+
+- `encryption_helper.utils.io`, `encryption_helper.utils.checks` and
+  `encryption_helper.common.strings`. None were used by the package.
+  `write_text_in_binary_mode()` was also **unconditionally broken**: its
+  validator rejected any non-`str` argument, so every call with the documented
+  `bytes` payload raised `Exception("One or more arguments are empty")`. The
+  test suite could not detect this because it mocked the validator out.
+- `setup.py` — it duplicated and contradicted `pyproject.toml`.
+- `requirements.txt` — a hand-maintained export that could drift from the lock
+  file CI installed from.
+- The committed `keys/` directory, which encouraged storing real private keys
+  inside a git working tree.
+
+### Fixed
+
+- `public_key_suffix` was `"public_key.pem"` while the code wrote
+  `"public-key.pem"`, and a test asserted the wrong one.
+- Log calls no longer use eager f-string interpolation.
+- Generic `raise Exception(...)` and `except Exception` replaced with typed
+  errors.
+
+### Internal
+
+- Test suite rewritten: 250+ tests, 98% branch coverage, gated at 95% in CI.
+  Mocks are used only to inject failures, never to replace the code under test.
+  Adds property-based tests, tamper tests, real-filesystem permission
+  assertions, and subprocess tests of the installed console script.
+- `.pylintrc` (which began with `disable=all`, making the reported 10.00/10
+  score meaningless) and `.flake8` (which ignored `F401`/`F403` and excluded
+  tests) replaced with a single Ruff configuration applied to source and tests
+  alike.
+- `mypy --strict` passes with no ignores.
+- CI consolidated into one hardened pipeline: least-privilege tokens, all
+  actions pinned to commit SHAs, concurrency cancellation, job timeouts, and a
+  15-way OS/Python test matrix. Bandit — configured but never executed by any
+  workflow in 0.0.1 — now runs and blocks on findings. CodeQL, dependency
+  review, `pip-audit` and OpenSSF Scorecard added.
+- Release workflow publishes to PyPI via Trusted Publishing with build
+  provenance attestation.
+- CI fails on committed private key material, on a missing SPDX header, and if
+  the built wheel does not install and round-trip in a clean environment.
+- A dedicated `tests/test_security_regressions.py` asserts, across every log
+  level, that neither private key material nor passphrases reach stdout,
+  stderr, logs or exception messages.
+- `tests/test_release_candidate.py` injects failures at every write stage --
+  before private creation, after creation, after backup, during public
+  creation and replacement, and during rollback itself -- and asserts the
+  directory always holds a complete old pair, a complete new pair, or no pair.
+  Each safeguard was mutation-tested: reverting it makes the corresponding
+  test fail.
+- Doctests now run as part of the suite (`--doctest-modules`). They were not
+  executed before, which is how a set of corrupted docstring examples --
+  containing literal newlines instead of escapes -- came to ship.
+
+## [0.0.1] — 2024-07-27
+
+### Added
+
+- Initial release: RSA-2048 key pair generation to `keys/pem/`.
+
+[Unreleased]: https://github.com/hsbc/encryption-helper-python/compare/v0.0.2...HEAD
+[0.0.2]: https://github.com/hsbc/encryption-helper-python/compare/v0.0.1...v0.0.2
+[0.0.1]: https://github.com/hsbc/encryption-helper-python/releases/tag/v0.0.1

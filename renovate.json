@@ -1,6 +1,76 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "config:recommended"
-  ]
+    "config:recommended",
+    ":semanticCommits",
+    "helpers:pinGitHubActionDigests",
+    "docker:pinDigests"
+  ],
+  "schedule": [
+    "before 6am on monday"
+  ],
+  "prConcurrentLimit": 5,
+  "labels": [
+    "dependencies"
+  ],
+  "packageRules": [
+    {
+      "description": "Group dev tooling into one PR; these bumps are noise individually. Not automerged: this tooling runs in CI with the repository checked out, so a compromised release is a supply-chain path, and a human approves it.",
+      "matchDepTypes": [
+        "dev",
+        "devDependencies"
+      ],
+      "groupName": "dev dependencies",
+      "automerge": false
+    },
+    {
+      "description": "Group GitHub Actions digest updates.",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "groupName": "github actions"
+    },
+    {
+      "description": "cryptography is the one runtime dependency and the security-critical one. Never automerge it; a human reads the changelog.",
+      "matchPackageNames": [
+        "cryptography"
+      ],
+      "automerge": false,
+      "labels": [
+        "dependencies",
+        "security-review"
+      ]
+    },
+    {
+      "description": "Hash-locked tool files. requirements/runtime.txt is excluded: it is derived from poetry.lock by scripts/compile_requirements.py, and tests/test_requirements_files.py fails until it is regenerated.",
+      "matchManagers": [
+        "pip-compile"
+      ],
+      "groupName": "hash-locked tooling"
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "labels": [
+      "security"
+    ],
+    "schedule": [
+      "at any time"
+    ]
+  },
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": [
+      "before 6am on the first day of the month"
+    ]
+  },
+  "pip-compile": {
+    "managerFilePatterns": [
+      "/^requirements/(release|build-backend)\\.txt$/"
+    ]
+  },
+  "dockerfile": {
+    "managerFilePatterns": [
+      "/(^|/)(Containerfile|Dockerfile)$/"
+    ]
+  }
 }
