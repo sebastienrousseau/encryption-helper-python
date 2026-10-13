@@ -298,3 +298,31 @@ class TestSigningStrengthFloor:
             generate("ecdsa", curve="p521"),
         ):
             verify(key.public_key(), sign(key, b"m"), b"m")
+
+
+class TestEcdsaMalleability:
+    """ECDSA signatures are malleable: ``(r, n - s)`` verifies as well as ``(r, s)``.
+
+    That is accepted on purpose -- rejecting high-s would refuse valid
+    signatures from other producers -- so it is documented instead, and this
+    test pins both the behaviour and the documentation.
+    """
+
+    def test_the_negated_s_signature_also_verifies(self, ecdsa_key):
+        from cryptography.hazmat.primitives.asymmetric.utils import (
+            decode_dss_signature,
+            encode_dss_signature,
+        )
+
+        signature = sign(ecdsa_key, b"payment batch")
+        r, s = decode_dss_signature(signature)
+        order = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
+        twin = encode_dss_signature(r, order - s)
+        assert twin != signature
+        verify(ecdsa_key.public_key(), twin, b"payment batch")
+
+    @pytest.mark.parametrize("function", [sign, verify])
+    def test_the_docstrings_warn_about_it(self, function):
+        doc = " ".join((function.__doc__ or "").split())
+        assert "malleable" in doc
+        assert "not a unique identifier" in doc

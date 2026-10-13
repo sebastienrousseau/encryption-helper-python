@@ -3,16 +3,17 @@
 """Streaming authenticated encryption, for data too large to hold in memory.
 
 :func:`~encryption_helper.crypto.envelope.encrypt` holds the whole message in
-memory, and peak usage measures at roughly four times the payload. That is
-appropriate for keys, credentials and documents, and unsuitable for a
-5 GB file.
+memory: beyond the input, encryption peaks at two times the payload and
+decryption at one, measured with :mod:`tracemalloc`. That is appropriate for
+keys, credentials and documents, and unsuitable for a 5 GB file.
 
 This module encrypts in fixed-size segments so memory stays bounded by the
-segment size, not the input size: about three segments at once, so roughly
-a megabyte at the default 256 KiB. The writer chooses the segment size and
-records it in the container, up to :data:`MAX_SEGMENT_SIZE`; a reader
-handling containers from untrusted sources can pass a lower
-``max_segment_size`` to :func:`decrypt_stream` to cap what it will allocate.
+segment size, not the input size: both directions peak at three segments
+(measured with :mod:`tracemalloc`), so about 768 KiB at the default 256 KiB.
+The writer chooses the segment size and records it in the container, up to
+:data:`MAX_SEGMENT_SIZE`; a reader handling containers from untrusted
+sources can pass a lower ``max_segment_size`` to :func:`decrypt_stream` to
+cap what it will allocate.
 
 Construction
 ------------
@@ -340,9 +341,11 @@ def decrypt_stream(  # noqa: PLR0913 - three of six are keyword-only options
         progress: Optional callback invoked with the cumulative plaintext byte
             count after each authenticated segment.
         max_segment_size: Largest segment size to accept from the container.
-            The writer chooses it, and the reader holds about three segments
-            at once, so a container from an untrusted source can make this
-            call allocate up to three times this much. Lower it to cap that.
+            The writer chooses it, and the reader holds three segments at
+            once -- the sealed segment being opened, the sealed segment read
+            ahead to learn whether it is the last, and the plaintext -- so a
+            container from an untrusted source can make this call allocate
+            three times this much. Lower it to cap that.
 
     Returns:
         The number of plaintext bytes written.
@@ -389,6 +392,12 @@ def decrypt_stream(  # noqa: PLR0913 - three of six are keyword-only options
     while True:
         following = _read_exact(source, sealed_size)
         final = not following
+        # The writer refuses to go past this, so a container that does is
+        # malformed; without the check the counter overflows into a bare
+        # OverflowError instead.
+        if number > _MAX_SEGMENTS:
+            msg = "Container exceeds the maximum number of segments."
+            raise DecryptionError(msg)
         nonce = _segment_nonce(prefix, number, final=final)
         try:
             plaintext = aead.decrypt(nonce, current, aad)
@@ -404,6 +413,9 @@ def decrypt_stream(  # noqa: PLR0913 - three of six are keyword-only options
             raise DecryptionError(msg) from exc
         _write_all(destination, plaintext)
         total += len(plaintext)
+        # Release this plaintext before the next decrypt allocates its own;
+        # holding both made the peak four segments rather than three.
+        del plaintext
         if progress is not None:
             progress(total)
         if final:

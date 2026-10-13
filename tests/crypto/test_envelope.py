@@ -248,7 +248,7 @@ class TestInternalFailureBranches:
             def decrypt(self, ciphertext, padding):
                 return b"short"
 
-        with pytest.raises(DecryptionError, match="wrong length"):
+        with pytest.raises(DecryptionError, match="Could not recover the content key"):
             decrypt(ShortKeyUnwrapper(), blob)
 
 
@@ -435,3 +435,75 @@ class TestRsaRecipientFloors:
         weak = rsa.generate_private_key(public_exponent=65537, key_size=1024)  # noqa: S505 - weak on purpose
         with pytest.raises(InvalidArgumentError, match="1024-bit RSA key"):
             encrypt_stream(weak.public_key(), io.BytesIO(b"x"), io.BytesIO())
+
+
+class _LongBytes(bytes):
+    """Bytes that report a length the AEAD cannot take, without allocating it."""
+
+    def __len__(self) -> int:
+        return 2**31
+
+
+class TestOneShotSizeLimit:
+    """AES-GCM in ``cryptography`` takes at most ``2**31 - 1`` bytes per call.
+
+    Past that it raised a bare ``OverflowError`` that escaped the library's
+    error hierarchy. The limit is now checked up front and points the caller
+    at the streaming API, which has no such limit on the payload.
+    """
+
+    def test_the_limit_is_the_aead_limit(self):
+        assert envelope._MAX_ONE_SHOT_SIZE == 2**31 - 1
+
+    def test_an_oversized_plaintext_is_refused(self, x25519_key):
+        with pytest.raises(InvalidArgumentError, match="encrypt_stream"):
+            encrypt(x25519_key.public_key(), _LongBytes(b"x"))
+
+    def test_oversized_associated_data_is_refused(self, x25519_key):
+        with pytest.raises(InvalidArgumentError, match="ssociated data"):
+            encrypt(x25519_key.public_key(), b"x", associated_data=_LongBytes(b"x"))
+
+
+class TestOneShotMemory:
+    """Decryption hands AES-GCM a view of the ciphertext, not a copy of it.
+
+    Slicing the ciphertext out of the container duplicated the whole payload,
+    so decryption peaked at twice the payload on top of the input. Bounds have
+    a quarter-payload margin.
+    """
+
+    SIZE = 8 * 1024 * 1024
+
+    @staticmethod
+    def _peak(run) -> int:
+        import tracemalloc
+
+        tracemalloc.start()
+        try:
+            tracemalloc.reset_peak()
+            run()
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        return peak
+
+    def test_decryption_peaks_at_one_payload(self, x25519_key):
+        blob = encrypt(x25519_key.public_key(), b"m" * self.SIZE)
+        peak = self._peak(lambda: decrypt(x25519_key, blob))
+        assert peak / self.SIZE < 1.25
+
+    def test_encryption_peaks_at_two_payloads(self, x25519_key):
+        data = b"m" * self.SIZE
+        peak = self._peak(lambda: encrypt(x25519_key.public_key(), data))
+        assert peak / self.SIZE < 2.25
+
+    def test_decryption_still_returns_bytes(self, x25519_key):
+        result = decrypt(x25519_key, encrypt(x25519_key.public_key(), b"m"))
+        assert type(result) is bytes
+
+
+class TestDocumentedLimitations:
+    def test_the_module_documents_that_aes_gcm_is_not_key_committing(self):
+        doc = " ".join((envelope.__doc__ or "").split())
+        assert "key-committing" in doc
+        assert "sign the plaintext" in doc

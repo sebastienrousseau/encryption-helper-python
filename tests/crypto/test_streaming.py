@@ -482,9 +482,95 @@ class TestContentKeyLength:
     @pytest.mark.parametrize("length", [5, 16, 24, 31, 33])
     def test_a_wrongly_sized_content_key_is_rejected(self, rsa_key, length):
         blob = self._forge(rsa_key, b"\x01" * length)
-        with pytest.raises(DecryptionError, match="wrong length"):
+        with pytest.raises(DecryptionError, match="Could not recover the content key"):
             open_sealed(rsa_key, blob)
 
     def test_the_correct_length_is_what_the_check_admits(self, rsa_key):
         blob = self._forge(rsa_key, b"\x01" * 32)
         assert open_sealed(rsa_key, blob) == b"forged"
+
+
+def _peak_in_segments(run, segment_size: int) -> float:
+    """Peak traced allocation during ``run()``, in units of one segment."""
+    import tracemalloc
+
+    tracemalloc.start()
+    try:
+        tracemalloc.reset_peak()
+        run()
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    return peak / segment_size
+
+
+class _Sink:
+    """A destination that keeps nothing, so only the codec's own memory counts."""
+
+    def write(self, data) -> int:
+        return len(data)
+
+
+class TestMemoryBound:
+    """The docstrings promise a peak in segments; hold the code to it.
+
+    Decryption once kept the previous segment's plaintext alive while the
+    next was decrypted, peaking at four segments while documented as three.
+    The bound below has half a segment of margin for interpreter noise, so a
+    regression to four fails.
+    """
+
+    SEGMENT_SIZE = 256 * 1024
+
+    def _container(self, key, data: bytes) -> bytes:
+        out = io.BytesIO()
+        encrypt_stream(
+            key.public_key(), io.BytesIO(data), out, segment_size=self.SEGMENT_SIZE
+        )
+        return out.getvalue()
+
+    def test_decryption_peaks_at_three_segments(self, x25519_key):
+        blob = self._container(x25519_key, b"a" * (self.SEGMENT_SIZE * 8 + 5))
+        source = io.BytesIO(blob)
+        peak = _peak_in_segments(
+            lambda: decrypt_stream(x25519_key, source, _Sink()), self.SEGMENT_SIZE
+        )
+        assert peak < 3.5
+
+    def test_encryption_peaks_at_three_segments(self, x25519_key):
+        source = io.BytesIO(b"a" * (self.SEGMENT_SIZE * 8 + 5))
+        peak = _peak_in_segments(
+            lambda: encrypt_stream(
+                x25519_key.public_key(),
+                source,
+                _Sink(),
+                segment_size=self.SEGMENT_SIZE,
+            ),
+            self.SEGMENT_SIZE,
+        )
+        assert peak < 3.5
+
+
+class TestSegmentCountLimit:
+    """The reader enforces the same segment ceiling as the writer.
+
+    The counter is four bytes. Without the check, segment 2**32 made
+    ``int.to_bytes`` raise a bare ``OverflowError`` instead of the library's
+    error; the ceiling is lowered here so the test does not need 16 TiB.
+    """
+
+    def test_a_container_past_the_ceiling_is_rejected(self, x25519_key, monkeypatch):
+        from encryption_helper.crypto import streaming
+
+        blob = bytes(seal(x25519_key, b"s" * (SEGMENT * 3 + 1)))  # segments 0..3
+        monkeypatch.setattr(streaming, "_MAX_SEGMENTS", 2)
+        with pytest.raises(DecryptionError, match="maximum number of segments"):
+            open_sealed(x25519_key, blob)
+
+    def test_a_container_at_the_ceiling_is_accepted(self, x25519_key, monkeypatch):
+        from encryption_helper.crypto import streaming
+
+        data = b"s" * (SEGMENT * 2 + 1)  # segments 0..2
+        blob = bytes(seal(x25519_key, data))
+        monkeypatch.setattr(streaming, "_MAX_SEGMENTS", 2)
+        assert open_sealed(x25519_key, blob) == data

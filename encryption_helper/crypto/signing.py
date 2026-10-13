@@ -148,6 +148,16 @@ def sign(private_key: PrivateKeyTypes, data: bytes) -> bytes:
     computer. NIST IR 8547 (initial public draft) disallows the others after
     2035, and deprecates 112-bit keys such as RSA-2048 after 2030.
 
+    A signature is not a unique identifier for the message it signs. ECDSA
+    signatures are malleable: anyone holding a valid ``(r, s)`` can produce
+    ``(r, n - s)``, a different byte string that :func:`verify` also
+    accepts, without the private key. RSA-PSS, ECDSA and hedged ML-DSA are
+    also randomised, so the signer gets different bytes each time. Do not
+    deduplicate, index or detect replays by signature bytes; use a hash of
+    the signed data. Where a third party must be unable to produce a second
+    valid signature, use Ed25519, Ed448 or ML-DSA, which are strongly
+    unforgeable.
+
     Args:
         private_key: Key to sign with.
         data: Message to sign.
@@ -187,6 +197,13 @@ def sign(private_key: PrivateKeyTypes, data: bytes) -> bytes:
 
 def verify(public_key: PublicKeyTypes, signature: bytes, data: bytes) -> None:
     """Verify ``signature`` over ``data`` using ``public_key``.
+
+    For ECDSA, signatures are malleable and both ``(r, s)`` and its twin
+    ``(r, n - s)`` verify. High-s values are accepted deliberately: other
+    producers (OpenSSL, HSMs, most platforms) emit them, and refusing them
+    would reject valid signatures. A successful verification therefore says
+    the key holder signed ``data``; the signature bytes are not a unique
+    identifier for that act. See :func:`sign`.
 
     Args:
         public_key: Key to verify against.

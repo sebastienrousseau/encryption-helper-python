@@ -30,6 +30,36 @@ rather than silently reinterpreted.
    the payload in independently authenticated segments at bounded memory. The
    command-line interface selects the segmented path for file input
    automatically and reads either format.
+
+   Measured with :mod:`tracemalloc`, beyond the input itself: :func:`encrypt`
+   peaks at two times the payload (the ciphertext, then the container that
+   concatenates it with the framing) and :func:`decrypt` at one (the
+   plaintext; the ciphertext is read through a view, not copied). A single
+   call accepts at most ``2**31 - 1`` bytes of plaintext, the AES-GCM limit
+   in ``cryptography``, and slightly less associated data.
+
+AES-GCM is not key-committing
+-----------------------------
+
+A GCM ciphertext and tag can be constructed to authenticate under two
+different keys, opening to a different plaintext under each (the "invisible
+salamanders" attack). Building one needs both keys, and for X25519 the
+sender knows them: one container, with one ephemeral public key, yields a
+content key for *every* X25519 recipient, and the sender can compute each of
+them. A malicious sender can therefore give the byte-identical container to
+two recipients and have each decrypt it successfully to a different
+plaintext, and neither can tell. Decryption proves "the sender meant this
+for you", not "everyone holding this container read the same thing".
+
+ML-KEM and RSA are not affected. An RSA-OAEP wrapped key opens only under
+the key it was wrapped to; anyone else's decryption fails. ML-KEM's implicit
+rejection gives any other recipient a key derived from their own secret,
+which the sender cannot predict. Fixing this for X25519 would change the
+container format, so existing containers stay as they are. A caller that
+needs one plaintext per container across recipients -- forwarded or
+broadcast containers, content-addressed storage, audit evidence -- must sign
+the plaintext with :func:`~encryption_helper.crypto.signing.sign` and have
+each recipient verify that signature after decrypting.
 """
 
 from __future__ import annotations
@@ -116,6 +146,16 @@ _CONTENT_KEY_SIZE: Final = 32
 
 #: GCM authentication tag length in bytes.
 _TAG_SIZE: Final = 16
+
+#: Largest plaintext or associated data one AES-GCM call accepts.
+#: ``cryptography`` rejects ``2**31`` bytes and above with a bare
+#: ``OverflowError``; checking first keeps that inside the library's errors.
+_MAX_ONE_SHOT_SIZE: Final = 2**31 - 1
+
+#: Upper bound on the framing :func:`_aad` adds to the caller's associated
+#: data: header, the largest encapsulation the length field can record, and
+#: nonce. Generous on purpose; the margin is irrelevant beside 2 GiB.
+_MAX_FRAMING_SIZE: Final = _HEADER_SIZE + 0xFFFF + _NONCE_SIZE
 
 _OAEP_PADDING: Final = padding.OAEP(
     mgf=padding.MGF1(algorithm=hashes.SHA256()),
@@ -299,10 +339,11 @@ def _decapsulate(
         # OAEP returns whatever the sender wrapped. The KDF-based mechanisms
         # always yield the right length, so this is the one place a short
         # key can enter, and checking it here covers every reader: a key of
-        # another valid AES size would otherwise be silently accepted.
+        # another valid AES size would otherwise be silently accepted. The
+        # failure is the uniform one: a distinct message would tell a forger
+        # that the unwrap itself succeeded.
         if len(content_key) != _CONTENT_KEY_SIZE:
-            msg = "Recovered content key has the wrong length; container is invalid."
-            raise DecryptionError(msg)
+            raise _opaque_kem_failure()
         return content_key
 
     if kem_id in (KEM_MLKEM768, KEM_MLKEM1024):
@@ -417,8 +458,11 @@ def encrypt(
         The encrypted container.
 
     Raises:
-        InvalidArgumentError: If ``public_key`` is not an RSA public key, or is
-            too small to wrap a 256-bit content key.
+        InvalidArgumentError: If ``public_key`` cannot encrypt or is too weak,
+            or ``plaintext`` or ``associated_data`` exceeds ``2**31 - 1``
+            bytes. Use
+            :func:`~encryption_helper.crypto.streaming.encrypt_stream` for
+            larger payloads.
 
     Example:
         >>> from encryption_helper.keys.generate import generate_rsa
@@ -428,6 +472,7 @@ def encrypt(
         b'example payload'
     """
     kem_id = _kem_for_public_key(public_key)
+    _require_one_shot_size(plaintext, associated_data)
 
     content_key, encapsulation = _encapsulate(public_key, kem_id)
 
@@ -436,7 +481,34 @@ def encrypt(
     ciphertext = AESGCM(content_key).encrypt(
         nonce, plaintext, _aad(header, encapsulation, nonce, associated_data)
     )
+    # One copy of the payload beyond the ciphertext is unavoidable here while
+    # the return type is ``bytes``: ``encrypt_into`` a preallocated buffer
+    # still needs ``bytes(buffer)`` to hand back, which costs the same.
     return header + encapsulation + nonce + ciphertext
+
+
+def _require_one_shot_size(plaintext: bytes, associated_data: bytes) -> None:
+    """Refuse inputs larger than one AES-GCM call can take.
+
+    The associated data is checked against the limit less the framing that
+    :func:`_aad` prepends, the largest of which is an RSA-16384 wrapped key.
+
+    Raises:
+        InvalidArgumentError: If either input is too large.
+    """
+    if len(plaintext) > _MAX_ONE_SHOT_SIZE:
+        msg = (
+            f"Plaintext of {len(plaintext)} bytes exceeds the one-shot limit of "
+            f"{_MAX_ONE_SHOT_SIZE} bytes. Use encrypt_stream() for large data."
+        )
+        raise InvalidArgumentError(msg)
+    if len(associated_data) > _MAX_ONE_SHOT_SIZE - _MAX_FRAMING_SIZE:
+        msg = (
+            f"Associated data of {len(associated_data)} bytes exceeds the "
+            f"one-shot limit. Associated data is context, not payload; put "
+            "large data in the plaintext and use encrypt_stream()."
+        )
+        raise InvalidArgumentError(msg)
 
 
 def _parse_header(header: bytes, *, streaming: bool) -> tuple[int, int]:
@@ -495,8 +567,11 @@ def _parse_header(header: bytes, *, streaming: bool) -> tuple[int, int]:
     return kem_id, encap_len
 
 
-def _parse(blob: bytes) -> tuple[bytes, int, bytes, bytes, bytes]:
+def _parse(blob: bytes) -> tuple[bytes, int, bytes, bytes, memoryview]:
     """Split a container into header, wrapped key, nonce and ciphertext.
+
+    The ciphertext is returned as a view into ``blob``: slicing it would copy
+    the whole payload just to hand it to AES-GCM, which reads any buffer.
 
     Raises:
         DecryptionError: If the container is malformed or an unsupported
@@ -519,7 +594,7 @@ def _parse(blob: bytes) -> tuple[bytes, int, bytes, bytes, bytes]:
     offset += wrapped_len
     nonce = blob[offset : offset + _NONCE_SIZE]
     offset += _NONCE_SIZE
-    return header, kem_id, encapsulation, nonce, blob[offset:]
+    return header, kem_id, encapsulation, nonce, memoryview(blob)[offset:]
 
 
 def decrypt(
