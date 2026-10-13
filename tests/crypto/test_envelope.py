@@ -463,7 +463,6 @@ class TestOneShotSizeLimit:
         with pytest.raises(InvalidArgumentError, match="ssociated data"):
             encrypt(x25519_key.public_key(), b"x", associated_data=_LongBytes(b"x"))
 
-
     def test_an_oversized_container_is_a_decryption_error(
         self, x25519_key, monkeypatch
     ):
@@ -486,6 +485,7 @@ class TestOneShotSizeLimit:
         blob = encrypt(x25519_key.public_key(), b"x")
         with pytest.raises(InvalidArgumentError, match="ssociated data"):
             decrypt(x25519_key, blob, associated_data=_LongBytes(b"x"))
+
 
 class TestOneShotMemory:
     """Decryption hands AES-GCM a view of the ciphertext, not a copy of it.
