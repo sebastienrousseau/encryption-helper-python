@@ -24,16 +24,22 @@ import errno
 import os
 import stat
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 __all__ = [
     "LINK_UNSUPPORTED_ERRNOS",
+    "LIST_BY_DESCRIPTOR",
     "SAFE_OPEN_FLAGS",
     "WINDOWS",
+    "changed_error",
+    "entry_identity",
     "exposed_directory",
     "fsync_directory",
     "group_or_world_readable",
     "hard_link_unsupported",
+    "identity_of",
+    "open_directory",
     "restrict_descriptor",
     "restrict_path",
     "safe_opener",
@@ -198,3 +204,77 @@ def group_or_world_readable(path: Path) -> int | None:
     except OSError:
         return None
     return mode if mode & 0o077 else None
+
+
+#: Whether a directory can be opened and listed through a descriptor. Then a
+#: walk can confirm it lists the directory it found, not whatever the path
+#: names by the time it is opened. POSIX; Windows lists by path.
+LIST_BY_DESCRIPTOR: bool = os.scandir in os.supports_fd and hasattr(os, "O_DIRECTORY")
+
+
+def identity_of(status: os.stat_result) -> tuple[int, int]:
+    """The ``(device, inode)`` pair that names one file, whatever its path."""
+    return status.st_dev, status.st_ino
+
+
+def changed_error(path: Path) -> OSError:
+    """The error for something replaced between being found and being opened."""
+    code = getattr(errno, "ESTALE", errno.EIO)
+    return OSError(code, "changed while it was being scanned", str(path))
+
+
+def entry_identity(entry: os.DirEntry[str], parent: Path) -> tuple[int, int]:
+    """The identity of a directory entry, without following a link.
+
+    Windows fills ``DirEntry.stat()`` from the directory listing, where the
+    inode and device are zero, so the entry is asked by path instead.
+    """
+    if WINDOWS:  # pragma: no cover - Windows only
+        return identity_of(os.lstat(parent / entry.name))
+    return identity_of(entry.stat(follow_symlinks=False))
+
+
+@contextlib.contextmanager
+def open_directory(
+    path: Path, expected: tuple[int, int] | None, *, follow: bool
+) -> Iterator[Iterator[os.DirEntry[str]]]:
+    """List ``path``, refusing it if it is no longer the directory expected.
+
+    On POSIX the directory is opened no-follow (unless ``follow``, for a
+    root the caller named), its descriptor's identity is compared with
+    ``expected``, and the listing is read through that descriptor, so a
+    directory swapped for a symbolic link, or a parent swapped above it,
+    is refused rather than listed. Entries then name only themselves:
+    join them to ``path``, and query them before the listing is closed.
+
+    On Windows a directory cannot be listed by descriptor; its identity is
+    checked by path immediately before listing, which narrows the window
+    without closing it.
+
+    Raises:
+        OSError: If the directory cannot be opened or listed, or with
+            :func:`changed_error` if it is not the one expected.
+    """
+    if not LIST_BY_DESCRIPTOR:  # pragma: no cover - Windows only
+        status = path.stat() if follow else path.lstat()
+        if expected is not None and identity_of(status) != expected:
+            raise changed_error(path)
+        with os.scandir(path) as listing:
+            yield listing
+        return
+    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0)
+    if not follow:
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        if not follow and exc.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise changed_error(path) from exc
+        raise
+    try:
+        if expected is not None and identity_of(os.fstat(fd)) != expected:
+            raise changed_error(path)
+        with os.scandir(fd) as listing:
+            yield listing
+    finally:
+        os.close(fd)

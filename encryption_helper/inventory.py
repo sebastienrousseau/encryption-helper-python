@@ -57,7 +57,6 @@ from __future__ import annotations
 import itertools
 import logging
 import os
-import stat
 import time
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
@@ -76,7 +75,7 @@ from cryptography.hazmat.primitives.asymmetric.types import (
     PublicKeyTypes,
 )
 
-from . import _platform
+from . import _io, _platform
 from ._labels import KEY_TYPES
 from .crypto import metadata
 from .errors import InvalidArgumentError
@@ -522,7 +521,7 @@ def classify(path: Path) -> Finding | None:
         return None
 
 
-def _classify(path: Path) -> Finding | None:
+def _classify(path: Path, expected: tuple[int, int] | None = None) -> Finding | None:
     """:func:`classify`, letting a read failure propagate as ``OSError``.
 
     Any other failure while interpreting the bytes becomes an ``unreadable``
@@ -532,11 +531,14 @@ def _classify(path: Path) -> Finding | None:
     runs at a model's request.
     """
     # Non-blocking and no-follow: a FIFO or link swapped in after the walk
-    # saw a regular file can neither stall the scan nor redirect it.
-    with open(path, "rb", opener=_platform.safe_opener) as handle:
-        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-            return None  # Replaced by a FIFO or device since the walk saw it.
-        blob = handle.read(MAX_CANDIDATE_BYTES)
+    # saw a regular file can neither stall the scan nor redirect it, and the
+    # identity the walk recorded must match what is opened.
+    try:
+        blob = _io._read_regular(
+            path, MAX_CANDIDATE_BYTES, prefix=True, expected=expected
+        )
+    except _io.NotRegularFileError:
+        return None  # Replaced by a FIFO or device since the walk saw it.
 
     try:
         for attempt in (_try_container, _try_private_key, _try_certificate):
@@ -622,7 +624,12 @@ class _Budget:
         return True
 
 
-def _walk(root: Path, errors: list[Finding], budget: _Budget) -> Iterator[Path]:
+_Identity = tuple[int, int]
+
+
+def _walk(
+    root: Path, errors: list[Finding], budget: _Budget
+) -> Iterator[tuple[Path, _Identity]]:
     """Yield regular files under ``root``, never following a symbolic link.
 
     Iterative, with an explicit stack: ``os.walk`` recurses on Python 3.10
@@ -630,10 +637,18 @@ def _walk(root: Path, errors: list[Finding], budget: _Budget) -> Iterator[Path]:
     whole scan. ``root`` itself is taken as given even if it is a link --
     the caller named it -- but no link found beneath it is followed.
 
+    Each file is yielded with the identity (device, inode) the walk saw, and
+    each directory is listed only if it still has the identity it was found
+    with, so replacing a directory -- or a parent -- with a link mid-scan
+    cannot redirect the scan outside the tree. A directory is walked at most
+    once by identity, so a bind mount or junction leading back into the tree
+    costs one visit, not a loop.
+
     Args:
         root: File or directory to examine.
         errors: Receives an ``unreadable`` finding for each directory that
-            could not be listed, and for a root that cannot be examined.
+            could not be listed or had changed, and for a root that cannot be
+            examined.
         budget: Bounds the walk. Each file or directory found spends one
             entry, and a listing is never read past what remains, so a
             directory of ten million entries is not materialised to examine
@@ -641,36 +656,63 @@ def _walk(root: Path, errors: list[Finding], budget: _Budget) -> Iterator[Path]:
     """
     if root.is_file():
         if budget.spend():
-            yield root
+            yield root, _platform.identity_of(root.stat())
         return
     if not root.is_dir():
         errors.append(_unexaminable_root(root))
         return
-    pending = [root]
+    pending: list[tuple[Path, _Identity | None]] = [(root, None)]
+    visited: set[_Identity] = set()
     while pending:
-        directory = pending.pop()
+        directory, expected = pending.pop()
+        is_root = expected is None
         try:
-            with os.scandir(directory) as entries:
-                remaining = budget.remaining()
-                listed = (
-                    entries
-                    if remaining is None
-                    else itertools.islice(entries, remaining + 1)
-                )
-                children = sorted(listed, key=lambda entry: entry.name)
+            with _platform.open_directory(
+                directory, expected, follow=is_root
+            ) as listing:
+                children = _list(directory, listing, budget, errors)
         except OSError as exc:
             errors.append(_unreadable(directory, exc, directory=True))
             continue
-        for entry in reversed(children):
+        for path, kind, identity in reversed(children):
             if not budget.spend():
                 return
-            try:
-                if entry.is_dir(follow_symlinks=False):
-                    pending.append(Path(entry.path))
-                elif entry.is_file(follow_symlinks=False):
-                    yield Path(entry.path)
-            except OSError as exc:  # pragma: no cover - entry vanished or EIO
-                errors.append(_unreadable(Path(entry.path), exc))
+            if kind == "file":
+                yield path, identity
+            elif identity not in visited:
+                visited.add(identity)
+                pending.append((path, identity))
+
+
+def _list(
+    directory: Path,
+    listing: Iterator[os.DirEntry[str]],
+    budget: _Budget,
+    errors: list[Finding],
+) -> list[tuple[Path, str, _Identity]]:
+    """Read one listing into ``(path, kind, identity)``, sorted by name.
+
+    Everything is asked of each entry here, while the directory is open: an
+    entry listed through a descriptor answers through that descriptor.
+    Entries that are neither directories nor regular files are dropped, as
+    are links, which are never followed.
+    """
+    remaining = budget.remaining()
+    entries = listing if remaining is None else itertools.islice(listing, remaining + 1)
+    children: list[tuple[Path, str, _Identity]] = []
+    for entry in entries:
+        path = directory / entry.name
+        try:
+            if entry.is_dir(follow_symlinks=False):
+                kind = "directory"
+            elif entry.is_file(follow_symlinks=False):
+                kind = "file"
+            else:
+                continue
+            children.append((path, kind, _platform.entry_identity(entry, directory)))
+        except OSError as exc:  # pragma: no cover - entry vanished or EIO
+            errors.append(_unreadable(path, exc))
+    return sorted(children, key=lambda child: child[0].name)
 
 
 def scan(paths: Iterable[str | os.PathLike[str]]) -> list[Finding]:
@@ -697,9 +739,9 @@ def _scan(paths: Iterable[str | os.PathLike[str]], budget: _Budget) -> list[Find
     findings: list[Finding] = []
     for entry in paths:
         root = Path(entry).expanduser()
-        for candidate in _walk(root, findings, budget):
+        for candidate, identity in _walk(root, findings, budget):
             try:
-                finding = _classify(candidate)
+                finding = _classify(candidate, identity)
             except OSError as exc:
                 finding = _unreadable(candidate, exc)
             if finding is not None:

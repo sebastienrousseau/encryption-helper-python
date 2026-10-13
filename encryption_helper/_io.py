@@ -748,13 +748,33 @@ def read_regular_file(
         >>> read_regular_file(d / "notes.txt", 5, prefix=True)
         b'hello'
     """
+    return _read_regular(Path(path), limit, prefix=prefix, expected=None)
+
+
+def _read_regular(
+    source: Path, limit: int, *, prefix: bool, expected: tuple[int, int] | None
+) -> bytes:
+    """:func:`read_regular_file`, optionally pinned to one file's identity.
+
+    ``expected`` is the ``(device, inode)`` a directory walk recorded. The
+    no-follow open protects only the last component of ``source``; a
+    parent swapped for a link since the walk would redirect the read, and
+    the identity of what was opened is what tells.
+
+    Raises:
+        OSError: As :func:`read_regular_file`, and
+            :func:`~encryption_helper._platform.changed_error` if the file
+            opened is not the one expected.
+    """
     if limit < 0:
         msg = f"limit must be zero or more, not {limit}"
         raise InvalidArgumentError(msg)
-    source = Path(path)
     with open(source, "rb", opener=_platform.safe_opener) as handle:
-        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+        status = os.fstat(handle.fileno())
+        if not stat.S_ISREG(status.st_mode):
             raise NotRegularFileError(source)
+        if expected is not None and _platform.identity_of(status) != expected:
+            raise _platform.changed_error(source)
         data = handle.read(limit if prefix else limit + 1)
     if not prefix and len(data) > limit:
         raise InputTooLargeError(source, limit)
