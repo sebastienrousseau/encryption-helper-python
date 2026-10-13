@@ -84,6 +84,7 @@ from .policy import NIST_LEGACY_DISALLOWED_FROM, assess, horizon
 __all__ = [
     "MAX_CANDIDATE_BYTES",
     "Finding",
+    "build_report",
     "classify",
     "scan",
     "scan_report",
@@ -793,6 +794,34 @@ def scan_report(
         raise InvalidArgumentError(msg)
     budget = _Budget(max_entries, time_budget)
     findings = _scan(paths, budget)
+    return build_report(findings, limit=limit, incomplete=budget.stopped)
+
+
+def build_report(
+    findings: list[Finding],
+    *,
+    limit: int | None = None,
+    incomplete: str | None = None,
+) -> dict[str, object]:
+    """Build the scan report from findings already in hand.
+
+    :func:`scan_report` is this over a fresh scan. A caller that also needs
+    the :class:`Finding` objects -- the CLI renders them as a table --
+    scans once and builds the report from the same findings.
+
+    Args:
+        findings: Findings from :func:`scan`.
+        limit: Most findings to include; adds ``truncated``.
+        incomplete: Why the scan stopped early, if it did; adds
+            ``incomplete``.
+
+    Returns:
+        The JSON-serialisable report described in :func:`scan_report`.
+
+    Example:
+        >>> build_report([], limit=10)["truncated"]
+        False
+    """
     shown = findings if limit is None else findings[:limit]
     report: dict[str, object] = {
         "summary": summarise(findings),
@@ -801,8 +830,8 @@ def scan_report(
     }
     if limit is not None:
         report["truncated"] = len(findings) > limit
-    if budget.stopped is not None:
-        report["incomplete"] = budget.stopped
+    if incomplete is not None:
+        report["incomplete"] = incomplete
     return report
 
 

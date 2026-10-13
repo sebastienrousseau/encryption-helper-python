@@ -13,7 +13,7 @@ import io
 import logging
 import os
 import sys
-from typing import Any
+from typing import Any, cast
 
 from .._io import (
     PUBLIC_FILE_MODE,
@@ -29,7 +29,7 @@ from ..crypto.envelope import (
 )
 from ..crypto.metadata import HEADER_SIZE, describe_container
 from ..crypto.streaming import decrypt_stream, encrypt_stream
-from ..inventory import Finding, scan, summarise
+from ..inventory import Finding, build_report, scan
 from ..keys import (
     ALLOWED_RSA_KEY_SIZES,
     POST_QUANTUM,
@@ -542,12 +542,9 @@ def _cmd_scan(args: argparse.Namespace) -> int:
     if missing:
         _fail_usage(f"No such file or directory: {', '.join(missing)}")
     findings = scan(args.paths)
-    summary = summarise(findings)
-    payload: dict[str, Any] = {
-        "summary": summary,
-        "findings": [finding.as_dict() for finding in findings],
-        "horizon": horizon(),
-    }
+    # The same report the MCP server returns, built in one place.
+    payload: dict[str, Any] = build_report(findings)
+    summary = cast("dict[str, Any]", payload["summary"])
     _emit(args, "\n".join(_scan_rows(findings, summary)), payload)
 
     if args.fail_on_finding and summary["needs_attention"]:
