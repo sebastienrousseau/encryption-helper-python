@@ -89,9 +89,36 @@ def restrict_descriptor(fd: int, mode: int) -> None:
 
 
 def restrict_path(path: Path, mode: int) -> None:
-    """Apply POSIX ``mode`` to a path. No-op on Windows (ACLs)."""
-    if not WINDOWS:
+    """Apply POSIX ``mode`` to a path, never through a symlink.
+
+    :func:`os.chmod` follows a link, so a link swapped in for a backup or a
+    restored key would have moved *its target's* permissions instead. Where
+    the platform can change a link's own mode (``lchmod``: macOS, the BSDs)
+    that is used. Linux has no ``lchmod``, so the file is opened no-follow
+    and changed through the descriptor; a file its owner can neither read
+    nor write cannot be opened, and falls back to refusing a symlink and
+    then changing the mode by name. No-op on Windows (ACLs).
+
+    Raises:
+        OSError: If the change fails; ``ELOOP`` if ``path`` is a symlink on a
+            platform without ``lchmod``.
+    """
+    if WINDOWS:
+        return
+    if os.chmod in os.supports_follow_symlinks:  # pragma: no cover - not Linux
+        path.chmod(mode, follow_symlinks=False)
+        return
+    try:
+        fd = os.open(path, os.O_RDONLY | SAFE_OPEN_FLAGS)
+    except PermissionError:
+        if path.is_symlink():
+            raise OSError(errno.ELOOP, os.strerror(errno.ELOOP), str(path)) from None
         path.chmod(mode)
+        return
+    try:
+        os.fchmod(fd, mode)
+    finally:
+        os.close(fd)
 
 
 def hard_link_unsupported(error: OSError) -> bool:

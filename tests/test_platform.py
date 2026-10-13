@@ -11,7 +11,10 @@ created itself.
 from __future__ import annotations
 
 import ast
+import errno
 import logging
+import os
+import re
 import stat
 import sys
 from pathlib import Path
@@ -124,3 +127,70 @@ def test_a_failing_chmod_does_not_leak_the_descriptor(tmp_path, monkeypatch):
 def test_files_are_still_written_owner_only(tmp_path):
     outcome = secure_write_bytes(tmp_path / "k", b"secret")
     assert stat.S_IMODE(outcome.path.stat().st_mode) == 0o600
+
+
+@posix_only
+class TestRestrictPathDoesNotFollowLinks:
+    """``os.chmod`` follows a link, so a link swapped in for a backup or a
+    restored key moved its target's permissions instead."""
+
+    @pytest.mark.parametrize("lchmod", [True, False])
+    def test_a_symlink_target_keeps_its_mode(self, tmp_path, monkeypatch, lchmod):
+        if lchmod and os.chmod not in os.supports_follow_symlinks:
+            pytest.skip("no lchmod on this platform")
+        if not lchmod:
+            monkeypatch.setattr(_platform.os, "supports_follow_symlinks", set())
+        victim = tmp_path / "victim"
+        victim.write_bytes(b"x")
+        victim.chmod(0o644)
+        link = tmp_path / "link"
+        link.symlink_to(victim)
+        if lchmod:
+            _platform.restrict_path(link, 0o600)  # changes the link itself
+        else:
+            with pytest.raises(
+                OSError, match=re.escape(os.strerror(errno.ELOOP))
+            ) as info:
+                _platform.restrict_path(link, 0o600)
+            assert info.value.errno == errno.ELOOP
+        assert stat.S_IMODE(victim.stat().st_mode) == 0o644
+
+    def test_a_regular_file_is_still_restricted(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(_platform.os, "supports_follow_symlinks", set())
+        target = tmp_path / "f"
+        target.write_bytes(b"x")
+        target.chmod(0o644)
+        _platform.restrict_path(target, 0o600)
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+    def test_the_unopenable_fallback_still_refuses_a_symlink(
+        self, tmp_path, monkeypatch
+    ):
+        """Where the no-follow open is unavailable, chmod must not follow."""
+        monkeypatch.setattr(_platform.os, "supports_follow_symlinks", set())
+
+        def denied(*_args, **_kwargs):
+            raise PermissionError(errno.EACCES, "Permission denied")
+
+        victim = tmp_path / "victim"
+        victim.write_bytes(b"x")
+        victim.chmod(0o644)
+        link = tmp_path / "link"
+        link.symlink_to(victim)
+        monkeypatch.setattr(_platform.os, "open", denied)
+        with pytest.raises(OSError, match=re.escape(os.strerror(errno.ELOOP))):
+            _platform.restrict_path(link, 0o600)
+        assert stat.S_IMODE(victim.stat().st_mode) == 0o644
+
+    def test_a_file_its_owner_cannot_open_is_still_restricted(
+        self, tmp_path, monkeypatch
+    ):
+        """No read or write bit for the owner: fall back to a checked chmod."""
+        if os.geteuid() == 0:
+            pytest.skip("root opens anything")
+        monkeypatch.setattr(_platform.os, "supports_follow_symlinks", set())
+        target = tmp_path / "f"
+        target.write_bytes(b"x")
+        target.chmod(0o000)
+        _platform.restrict_path(target, 0o600)
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
