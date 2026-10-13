@@ -85,8 +85,8 @@ def test_a_key_outside_the_table_keeps_the_fallback_description():
     assert key_label(key) == "a DSA key"
 
 
-def test_the_inventory_copy_has_not_drifted():
-    """Until the inventory reads KEY_TYPES itself, its copy must match it."""
+def test_the_inventory_names_keys_from_the_same_table():
+    """The scan reads KEY_TYPES; it no longer keeps a copy that can drift."""
     assert tuple(inventory._PUBLIC_KEY_NAMES) == tuple(
         (e.public, e.algorithm, e.size) for e in KEY_TYPES
     )

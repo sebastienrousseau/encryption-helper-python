@@ -54,8 +54,11 @@ Example:
 
 from __future__ import annotations
 
+import itertools
+import logging
 import os
 import stat
+import time
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -66,13 +69,7 @@ from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import (
     ec,
-    ed448,
-    ed25519,
-    mldsa,
-    mlkem,
     rsa,
-    x448,
-    x25519,
 )
 from cryptography.hazmat.primitives.asymmetric.types import (
     PrivateKeyTypes,
@@ -80,17 +77,21 @@ from cryptography.hazmat.primitives.asymmetric.types import (
 )
 
 from . import _platform
+from ._labels import KEY_TYPES
 from .crypto import metadata
 from .errors import InvalidArgumentError
-from .policy import NIST_LEGACY_DISALLOWED_FROM, assess
+from .policy import NIST_LEGACY_DISALLOWED_FROM, assess, horizon
 
 __all__ = [
     "MAX_CANDIDATE_BYTES",
     "Finding",
     "classify",
     "scan",
+    "scan_report",
     "summarise",
 ]
+
+_LOG = logging.getLogger(__name__)
 
 #: Most bytes read from any single file. A PEM certificate chain is a few
 #: kilobytes; anything beyond this is not key material, and reading it would
@@ -122,19 +123,12 @@ _PRIVATE_BANNERS: Final = (
     b"-----BEGIN OPENSSH PRIVATE KEY-----",
 )
 
-#: Algorithm name and size by public key class, for every fixed-size type.
-#: RSA and ECDSA are absent because they carry their size on the instance and
-#: are asked directly.
-_PUBLIC_KEY_NAMES: Final = (
-    (ed25519.Ed25519PublicKey, "ed25519", 256),
-    (ed448.Ed448PublicKey, "ed448", 448),
-    (x25519.X25519PublicKey, "x25519", 256),
-    (x448.X448PublicKey, "x448", 448),
-    (mlkem.MLKEM768PublicKey, "mlkem", 768),
-    (mlkem.MLKEM1024PublicKey, "mlkem", 1024),
-    (mldsa.MLDSA44PublicKey, "mldsa", 44),
-    (mldsa.MLDSA65PublicKey, "mldsa", 65),
-    (mldsa.MLDSA87PublicKey, "mldsa", 87),
+#: Algorithm name and size by public key class, for every fixed-size type,
+#: read from the package's one table so the scan cannot drift from what the
+#: rest of the package calls a key. RSA and ECDSA are absent because they
+#: carry their size on the instance and are asked directly.
+_PUBLIC_KEY_NAMES: Final = tuple(
+    (entry.public, entry.algorithm, entry.size) for entry in KEY_TYPES
 )
 
 
@@ -259,19 +253,11 @@ def _from_public_key(
     """Build a finding by assessing a loaded public key."""
     algorithm, key_size = _describe_public_key(key)
     if algorithm is None:
-        return Finding(
-            path=path,
-            kind=kind,
-            algorithm=None,
-            key_size=None,
-            quantum_vulnerable=None,
-            deprecated_from=None,
-            disallowed_from=None,
-            replacements=(),
-            detail=(
-                f"The key type {type(key).__name__} is not one this library "
-                "assesses. Review it manually."
-            ),
+        return _undetermined(
+            path,
+            kind,
+            f"The key type {type(key).__name__} is not one this library "
+            "assesses. Review it manually.",
             subject=subject,
         )
     posture = assess(algorithm, key_size=key_size)
@@ -289,19 +275,54 @@ def _from_public_key(
     )
 
 
+def _undetermined(
+    path: Path, kind: str, detail: str, *, subject: str | None = None
+) -> Finding:
+    """A finding whose algorithm could not be established: it needs a human."""
+    return Finding(
+        path=path,
+        kind=kind,
+        algorithm=None,
+        key_size=None,
+        quantum_vulnerable=None,
+        deprecated_from=None,
+        disallowed_from=None,
+        replacements=(),
+        detail=detail,
+        subject=subject,
+    )
+
+
 def _try_certificate(path: Path, blob: bytes) -> Finding | None:
-    """Classify ``blob`` as an X.509 certificate, or return None."""
+    """Classify ``blob`` as an X.509 certificate, or return None.
+
+    Parsing a certificate does not load its key: ``public_key()`` does, and
+    raises for a key type cryptography does not support. That call used to
+    sit outside any handler, so one planted certificate raised out of
+    :func:`scan` and suppressed the whole report. The certificate is now a
+    finding of its own, undetermined, because a key the scan cannot name is
+    exactly what a migration inventory must surface.
+    """
     for loader in (x509.load_pem_x509_certificate, x509.load_der_x509_certificate):
         try:
             cert = loader(blob)
         except (ValueError, TypeError):
             continue
-        return _from_public_key(
-            path,
-            cert.public_key(),
-            kind=KIND_CERTIFICATE,
-            subject=cert.subject.rfc4514_string(),
-        )
+        try:
+            subject: str | None = cert.subject.rfc4514_string()
+        except ValueError:
+            subject = None
+        try:
+            key = cert.public_key()
+        except (ValueError, TypeError, UnsupportedAlgorithm) as exc:
+            return _undetermined(
+                path,
+                KIND_CERTIFICATE,
+                f"The certificate's key could not be loaded ({exc}). "
+                "Review it manually.",
+                subject=subject,
+            )
+        return _from_public_key(path, key, kind=KIND_CERTIFICATE, subject=subject)
     return None
 
 
@@ -502,7 +523,14 @@ def classify(path: Path) -> Finding | None:
 
 
 def _classify(path: Path) -> Finding | None:
-    """:func:`classify`, letting a read failure propagate as ``OSError``."""
+    """:func:`classify`, letting a read failure propagate as ``OSError``.
+
+    Any other failure while interpreting the bytes becomes an ``unreadable``
+    finding for this file. The parsers are cryptography's and this module's,
+    and the next bug in either must cost one file, not the scan: the
+    directories scanned are not vetted, and through the MCP server the scan
+    runs at a model's request.
+    """
     # Non-blocking and no-follow: a FIFO or link swapped in after the walk
     # saw a regular file can neither stall the scan nor redirect it.
     with open(path, "rb", opener=_platform.safe_opener) as handle:
@@ -510,35 +538,91 @@ def _classify(path: Path) -> Finding | None:
             return None  # Replaced by a FIFO or device since the walk saw it.
         blob = handle.read(MAX_CANDIDATE_BYTES)
 
-    for attempt in (_try_container, _try_private_key, _try_certificate):
-        finding = attempt(path, blob)
-        if finding is not None:
-            return finding
-    return _try_public_key(path, blob)
+    try:
+        for attempt in (_try_container, _try_private_key, _try_certificate):
+            finding = attempt(path, blob)
+            if finding is not None:
+                return finding
+        return _try_public_key(path, blob)
+    except Exception as exc:  # noqa: BLE001 - hostile content must not end a scan
+        _LOG.debug("could not classify %s", path, exc_info=True)
+        return _not_examined(
+            path,
+            f"This file could not be classified ({type(exc).__name__}), so "
+            "whether it holds cryptographic material is unknown. Review it "
+            "manually.",
+        )
+
+
+def _not_examined(path: Path, detail: str) -> Finding:
+    """An ``unreadable`` finding: something the scan could not look inside."""
+    return _undetermined(path, KIND_UNREADABLE, detail)
 
 
 def _unreadable(path: Path, error: OSError, *, directory: bool = False) -> Finding:
-    """A finding for something the scan could not look inside."""
+    """A finding for a file or directory a read failure kept the scan out of."""
     reason = error.strerror or type(error).__name__
     what = "directory could not be listed" if directory else "file could not be read"
-    return Finding(
-        path=path,
-        kind=KIND_UNREADABLE,
-        algorithm=None,
-        key_size=None,
-        quantum_vulnerable=None,
-        deprecated_from=None,
-        disallowed_from=None,
-        replacements=(),
-        detail=(
-            f"This {what} ({reason}), so whether it holds cryptographic "
-            "material is unknown. Rerun with access to it, or review it "
-            "manually."
-        ),
+    return _not_examined(
+        path,
+        f"This {what} ({reason}), so whether it holds cryptographic material "
+        "is unknown. Rerun with access to it, or review it manually.",
     )
 
 
-def _walk(root: Path, errors: list[Finding]) -> Iterator[Path]:
+def _unexaminable_root(root: Path) -> Finding:
+    """A finding for a root that is neither a file nor a directory.
+
+    It used to yield nothing, so ``scan --fail-on-finding`` over a dangling
+    link or a FIFO passed a gate having examined nothing.
+    """
+    if not os.path.lexists(root):
+        reason = "does not exist"
+    elif not root.exists():
+        reason = "is a symbolic link to something that does not exist"
+    else:
+        reason = "is not a regular file or directory"
+    return _not_examined(root, f"This path {reason}, so nothing under it was examined.")
+
+
+class _Budget:
+    """How much one scan may examine, and why it stopped if it did."""
+
+    def __init__(self, max_entries: int | None, time_budget: float | None) -> None:
+        self.max_entries = max_entries
+        self.time_budget = time_budget
+        self.deadline = None if time_budget is None else time.monotonic() + time_budget
+        self.entries = 0
+        self.stopped: str | None = None
+
+    def remaining(self) -> int | None:
+        """Entries still allowed, or None if unbounded."""
+        if self.max_entries is None:
+            return None
+        return max(self.max_entries - self.entries, 0)
+
+    def spend(self) -> bool:
+        """Account for one more file or directory; False once exhausted."""
+        if self.stopped is not None:
+            return False
+        if self.max_entries is not None and self.entries >= self.max_entries:
+            self.stopped = (
+                f"Stopped after examining {self.entries} entries (files and "
+                "directories), the most this scan may examine. Narrow the path "
+                "to examine the rest."
+            )
+            return False
+        if self.deadline is not None and time.monotonic() >= self.deadline:
+            self.stopped = (
+                f"Stopped after {self.time_budget:g} seconds, the longest this "
+                "scan may run. Narrow the path to examine the rest."
+            )
+            return False
+        self.entries += 1
+        return True
+
+
+def _walk(root: Path, errors: list[Finding], budget: _Budget) -> Iterator[Path]:
     """Yield regular files under ``root``, never following a symbolic link.
 
     Iterative, with an explicit stack: ``os.walk`` recurses on Python 3.10
@@ -549,23 +633,37 @@ def _walk(root: Path, errors: list[Finding]) -> Iterator[Path]:
     Args:
         root: File or directory to examine.
         errors: Receives an ``unreadable`` finding for each directory that
-            could not be listed.
+            could not be listed, and for a root that cannot be examined.
+        budget: Bounds the walk. Each file or directory found spends one
+            entry, and a listing is never read past what remains, so a
+            directory of ten million entries is not materialised to examine
+            ten.
     """
     if root.is_file():
-        yield root
+        if budget.spend():
+            yield root
         return
     if not root.is_dir():
+        errors.append(_unexaminable_root(root))
         return
     pending = [root]
     while pending:
         directory = pending.pop()
         try:
             with os.scandir(directory) as entries:
-                children = sorted(entries, key=lambda entry: entry.name)
+                remaining = budget.remaining()
+                listed = (
+                    entries
+                    if remaining is None
+                    else itertools.islice(entries, remaining + 1)
+                )
+                children = sorted(listed, key=lambda entry: entry.name)
         except OSError as exc:
             errors.append(_unreadable(directory, exc, directory=True))
             continue
         for entry in reversed(children):
+            if not budget.spend():
+                return
             try:
                 if entry.is_dir(follow_symlinks=False):
                     pending.append(Path(entry.path))
@@ -591,10 +689,15 @@ def scan(paths: Iterable[str | os.PathLike[str]]) -> list[Finding]:
         >>> scan([])
         []
     """
+    return _scan(paths, _Budget(None, None))
+
+
+def _scan(paths: Iterable[str | os.PathLike[str]], budget: _Budget) -> list[Finding]:
+    """:func:`scan`, within ``budget``."""
     findings: list[Finding] = []
     for entry in paths:
         root = Path(entry).expanduser()
-        for candidate in _walk(root, findings):
+        for candidate in _walk(root, findings, budget):
             try:
                 finding = _classify(candidate)
             except OSError as exc:
@@ -602,6 +705,63 @@ def scan(paths: Iterable[str | os.PathLike[str]]) -> list[Finding]:
             if finding is not None:
                 findings.append(finding)
     return sorted(findings, key=lambda f: str(f.path))
+
+
+def scan_report(
+    paths: Iterable[str | os.PathLike[str]],
+    *,
+    limit: int | None = None,
+    max_entries: int | None = None,
+    time_budget: float | None = None,
+) -> dict[str, object]:
+    """Scan, and return the report the CLI and the MCP server both emit.
+
+    With no bounds the walk is complete and the report is exactly
+    ``{"summary", "findings", "horizon"}``, the CLI's ``scan --json``
+    contract. A caller serving untrusted requests should pass bounds: an
+    unbounded walk's cost and response grow with whatever tree it is
+    pointed at.
+
+    Args:
+        paths: Files or directories to examine, as for :func:`scan`.
+        limit: Most findings to include. The summary always counts every
+            finding; ``truncated`` says whether any were left out.
+        max_entries: Most files and directories to examine. When reached,
+            the walk stops and ``incomplete`` says why.
+        time_budget: Most seconds to spend walking. Checked between entries;
+            one file costs at most a :data:`MAX_CANDIDATE_BYTES` read.
+
+    Returns:
+        A JSON-serialisable report. ``truncated`` is present when ``limit``
+        is given; ``incomplete`` only when a bound stopped the walk.
+
+    Raises:
+        InvalidArgumentError: If a bound is not positive.
+
+    Example:
+        >>> sorted(scan_report([]))
+        ['findings', 'horizon', 'summary']
+    """
+    for name, value in (("limit", limit), ("max_entries", max_entries)):
+        if value is not None and value < 1:
+            msg = f"{name} must be at least 1, not {value}."
+            raise InvalidArgumentError(msg)
+    if time_budget is not None and time_budget <= 0:
+        msg = f"time_budget must be positive, not {time_budget}."
+        raise InvalidArgumentError(msg)
+    budget = _Budget(max_entries, time_budget)
+    findings = _scan(paths, budget)
+    shown = findings if limit is None else findings[:limit]
+    report: dict[str, object] = {
+        "summary": summarise(findings),
+        "findings": [finding.as_dict() for finding in shown],
+        "horizon": horizon(),
+    }
+    if limit is not None:
+        report["truncated"] = len(findings) > limit
+    if budget.stopped is not None:
+        report["incomplete"] = budget.stopped
+    return report
 
 
 def summarise(findings: list[Finding]) -> dict[str, object]:

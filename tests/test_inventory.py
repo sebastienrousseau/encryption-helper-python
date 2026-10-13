@@ -277,9 +277,18 @@ class TestScan:
     def test_an_empty_path_list_is_not_an_error(self):
         assert scan([]) == []
 
-    def test_a_missing_path_is_not_an_error(self, tmp_path):
-        """A scan reports what it can see rather than failing on the first gap."""
-        assert scan([tmp_path / "absent"]) == []
+    def test_a_missing_path_is_reported_not_raised(self, tmp_path):
+        """A scan reports what it can see rather than failing on the first gap.
+
+        The gap itself is reported too. It used to vanish, so a gate on
+        ``needs_attention`` passed over a mistyped path having examined
+        nothing.
+        """
+        key = generate("mlkem")
+        (tmp_path / "real.pub").write_bytes(encode_public_key(key.public_key()))
+        findings = scan([tmp_path / "absent", tmp_path / "real.pub"])
+        assert [f.path.name for f in findings] == ["absent", "real.pub"]
+        assert findings[0].kind == "unreadable"
 
 
 class TestSummary:
