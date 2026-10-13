@@ -29,15 +29,14 @@ Two properties are enforced rather than documented:
 from __future__ import annotations
 
 import json
-import os
-import stat
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, cast
 
+from encryption_helper import read_regular_file
 from encryption_helper.crypto.metadata import HEADER_SIZE, describe_container
-from encryption_helper.errors import EncryptionHelperError
+from encryption_helper.errors import EncryptionHelperError, KeyReadError
 from encryption_helper.inventory import scan_report
 from encryption_helper.keys import fingerprint_sha256, load_public_key
 from encryption_helper.keys.load import MAX_KEY_FILE_BYTES
@@ -61,12 +60,6 @@ SCAN_TIME_BUDGET: Final = 30.0
 #: does not bound it: a finding carries its path and a certificate's
 #: subject, either of which can be kilobytes long.
 MAX_FINDINGS_BYTES: Final = 1024 * 1024
-
-#: Added to the flags ``open()`` derives from its mode. Non-blocking, so a
-#: FIFO cannot stall the open; no-follow, so a link swapped in after the path
-#: was resolved and confined is refused. Both are absent on Windows, which has
-#: no FIFOs in the filesystem namespace.
-_SAFE_OPEN_FLAGS: Final = getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
 
 
 class ToolError(Exception):
@@ -164,12 +157,13 @@ def _resolve_within(root: Path, candidate: str) -> Path:
     return target
 
 
-def _safe_opener(path: str, flags: int) -> int:
-    return os.open(path, flags | _SAFE_OPEN_FLAGS)
-
-
 def _read_regular_file(path: Path, limit: int, *, prefix: bool = False) -> bytes:
     """Read at most ``limit`` bytes of a regular file, refusing anything else.
+
+    The reading itself is :func:`encryption_helper.read_regular_file`:
+    non-blocking and no-follow, so a FIFO cannot stall the open and a link
+    swapped in after the path was confined is refused; regular files only;
+    bounded. This server used to carry its own copy of those open flags.
 
     Args:
         path: A path already confined by :func:`_resolve_within`.
@@ -182,18 +176,13 @@ def _read_regular_file(path: Path, limit: int, *, prefix: bool = False) -> bytes
             non-regular file, or holds more than ``limit`` bytes.
     """
     try:
-        with open(path, "rb", opener=_safe_opener) as handle:
-            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-                msg = f"{path} is not a regular file."
-                raise ToolError(msg)
-            data = handle.read(limit if prefix else limit + 1)
-    except OSError as exc:
+        return read_regular_file(path, limit, prefix=prefix)
+    except OSError as exc:  # including a file that is not a regular file
         msg = f"{path}: {exc.strerror or 'cannot be read'}."
         raise ToolError(msg) from exc
-    if len(data) > limit:
+    except KeyReadError as exc:  # what remains: larger than the limit
         msg = f"{path} is larger than the {limit}-byte limit for this tool."
-        raise ToolError(msg)
-    return data
+        raise ToolError(msg) from exc
 
 
 def _pq_horizon(_root: Path, _arguments: dict[str, Any]) -> dict[str, Any]:
