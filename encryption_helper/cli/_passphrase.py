@@ -58,25 +58,25 @@ def _passphrase_from_source(args: argparse.Namespace) -> bytes | None:
     Raises:
         SystemExit: If the named source is missing, empty, or unusable.
     """
-    if getattr(args, "passphrase_env", None):
-        value = os.environ.get(args.passphrase_env)
+    if getattr(args, "unlock_env", None):
+        value = os.environ.get(args.unlock_env)
         if value is None:
-            _fail_usage(f"Environment variable {args.passphrase_env} is not set.")
+            _fail_usage(f"Environment variable {args.unlock_env} is not set.")
         if not value.strip():
             _fail_usage(
-                f"Environment variable {args.passphrase_env} is empty or "
+                f"Environment variable {args.unlock_env} is empty or "
                 "contains only whitespace, which would not protect the key."
             )
         return _as_passphrase_bytes(value)
 
-    if getattr(args, "passphrase_file", None):
-        path = Path(args.passphrase_file).expanduser()
+    if getattr(args, "unlock_file", None):
+        path = Path(args.unlock_file).expanduser()
         _reject_oversized_passphrase_file(path)
         _warn_if_passphrase_file_is_readable(path)
         data = _strip_one_trailing_newline(_read_passphrase_file(path))
         if not data.strip():
             _fail_usage(
-                f"Passphrase file {args.passphrase_file} is empty or contains "
+                f"Passphrase file {args.unlock_file} is empty or contains "
                 "only whitespace, which would not protect the key."
             )
         return _as_passphrase_bytes(data)

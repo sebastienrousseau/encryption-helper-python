@@ -72,8 +72,13 @@ def _add_passphrase_flags(
             sense when creating a key, not when reading an existing one.
     """
     group = parser.add_mutually_exclusive_group()
+    # The parsed values name where the passphrase comes from -- a variable
+    # name, a path -- and never hold the passphrase itself. The ``unlock_*``
+    # destinations say so; ``passphrase_*`` made every error message that
+    # names the source look like it was logging the secret.
     group.add_argument(
         "--passphrase-env",
+        dest="unlock_env",
         metavar="VAR",
         help=(
             "Read the passphrase from this environment variable. Preferred "
@@ -82,6 +87,7 @@ def _add_passphrase_flags(
     )
     group.add_argument(
         "--passphrase-file",
+        dest="unlock_file",
         metavar="PATH",
         help=(
             "Read the passphrase from this file. Exactly one trailing newline "

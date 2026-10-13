@@ -664,7 +664,7 @@ class TestNamespaceHygiene:
         assert self.SECRET not in str(vars(args))
         assert not any(self.SECRET in str(value) for value in vars(args).values())
         # Only the source identifier is retained.
-        assert args.passphrase_env == "EH_RC"
+        assert args.unlock_env == "EH_RC"
 
     def test_namespace_stays_clean_after_a_full_run(self, tmp_path, monkeypatch):
         """Capture the namespace as the command actually saw it."""
