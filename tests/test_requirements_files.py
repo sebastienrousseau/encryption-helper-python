@@ -41,6 +41,38 @@ def test_runtime_pins_equal_poetry_lock():
     assert not drift, f"runtime.txt differs from poetry.lock: {drift}. {REGENERATE}"
 
 
+def test_ci_tool_pins_equal_poetry_lock():
+    """CI must run the linters and test tools a developer's lock gives them.
+
+    The CI jobs used to ``pip install pytest ruff mypy`` unpinned, so an
+    upstream release could change a verdict between a local run and CI.
+    """
+    lock = {
+        p["name"].lower(): p["version"]
+        for p in tomllib.loads((ROOT / "poetry.lock").read_text(encoding="utf-8"))[
+            "package"
+        ]
+    }
+    drift = {
+        name: (version, lock.get(name))
+        for name, version in _pins("ci.txt").items()
+        if lock.get(name) != version
+    }
+    assert not drift, f"ci.txt differs from poetry.lock: {drift}. {REGENERATE}"
+
+
+def test_ci_installs_its_tools_from_hashes():
+    """No CI job may install a test, lint or type-check tool unpinned."""
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "pip install --require-hashes -r requirements/ci.txt" in ci
+    unpinned = re.findall(
+        r"(?m)^(?!\s*#).*pip install[^\n]*"
+        r"\b(pytest|hypothesis|ruff|mypy|poetry|tomli)\b",
+        ci,
+    )
+    assert not unpinned, f"unpinned CI tools: {sorted(set(unpinned))}"
+
+
 def test_runtime_covers_every_declared_dependency():
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     declared = {
@@ -51,7 +83,7 @@ def test_runtime_covers_every_declared_dependency():
 
 
 @pytest.mark.parametrize(
-    "name", ["runtime.txt", "build-backend.txt", "release.txt", "audit.txt"]
+    "name", ["runtime.txt", "build-backend.txt", "release.txt", "audit.txt", "ci.txt"]
 )
 def test_every_pin_carries_a_hash(name):
     """`pip --require-hashes` refuses a file with an unhashed pin; fail here first."""
@@ -72,7 +104,7 @@ def test_build_backend_satisfies_the_build_system():
     assert "poetry-core" in _pins("build-backend.txt")
 
 
-_COMPILED_FROM_IN = ["build-backend", "release", "audit"]
+_COMPILED_FROM_IN = ["build-backend", "release", "audit", "ci"]
 
 
 def _top_level(stem: str) -> set[str]:
@@ -101,7 +133,7 @@ def test_every_in_file_names_what_its_lock_pins(stem):
 
 
 @pytest.mark.parametrize(
-    "name", ["runtime.txt", "build-backend.txt", "release.txt", "audit.txt"]
+    "name", ["runtime.txt", "build-backend.txt", "release.txt", "audit.txt", "ci.txt"]
 )
 def test_lock_files_carry_no_machine_specific_paths(name):
     """pip-compile copies its arguments into comments; keep them relative."""

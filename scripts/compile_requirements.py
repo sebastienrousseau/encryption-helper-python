@@ -16,13 +16,20 @@ Three files, each installed with ``pip --require-hashes``:
     build, twine and cyclonedx-bom for the release and CI build jobs.
 ``audit.txt``
     bandit and pip-audit for the CI security job.
+``ci.txt``
+    pytest, coverage, hypothesis, ruff and mypy for the CI test, lint and
+    type-check jobs, constrained to poetry.lock. Compiled with ``uv`` rather
+    than pip-compile because it must be *universal*: the test matrix installs
+    it on Python 3.10 to 3.14 across Linux, macOS and Windows, and a lock
+    resolved for one interpreter omits what another needs (``tomli`` and
+    ``exceptiongroup`` below 3.11, ``colorama`` on Windows).
 
 Paths are passed relative to the repository root, and the poetry.lock
 constraints are written to a fixed name rather than a random temporary file,
 because pip-compile copies both into the generated ``# via`` comments. A
 machine-specific path there makes every regeneration a spurious diff.
 
-Run with pip-tools installed, under Python 3.14 (the release jobs' version)::
+Run with pip-tools and uv installed, under Python 3.14 (the release jobs' version)::
 
     python scripts/compile_requirements.py
 
@@ -65,6 +72,33 @@ def compile_file(*args: str) -> None:
     )
 
 
+def compile_universal(stem: str, constraints: Path) -> None:
+    """Compile ``stem``.in for every supported Python and platform, with uv."""
+    subprocess.run(  # noqa: S603
+        [
+            sys.executable,
+            "-m",
+            "uv",
+            "pip",
+            "compile",
+            "--universal",
+            "--python-version",
+            "3.10",
+            "--generate-hashes",
+            "--quiet",
+            "--custom-compile-command",
+            "python scripts/compile_requirements.py",
+            "-c",
+            constraints.relative_to(ROOT).as_posix(),
+            "-o",
+            f"requirements/{stem}.txt",
+            f"requirements/{stem}.in",
+        ],
+        cwd=ROOT,
+        check=True,
+    )
+
+
 def main() -> None:
     """Compile every requirements file."""
     constraints = REQUIREMENTS / ".poetry-lock-constraints.txt"
@@ -83,6 +117,7 @@ def main() -> None:
             "pyproject.toml",
         )
         output.write_text(RUNTIME_HEADER + output.read_text(encoding="utf-8"))
+        compile_universal("ci", constraints)
     finally:
         constraints.unlink()
     for name in ("build-backend", "release", "audit"):

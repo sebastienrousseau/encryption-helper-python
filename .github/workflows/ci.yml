@@ -44,20 +44,19 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      # From the lockfile, not `pip install ruff`. An unpinned linter lets
-      # an upstream release fail the build and makes CI disagree with a
-      # developer's machine; both happened on the first real run.
+      # From hashes constrained to poetry.lock, not `pip install ruff`. An
+      # unpinned linter lets an upstream release fail the build and makes CI
+      # disagree with a developer's machine; both happened on the first real
+      # run. requirements/ci.txt is the same set every tool-using job installs.
       - name: Install tooling
-        run: |
-          python -m pip install --upgrade pip poetry
-          poetry install --only dev --no-root
+        run: python -m pip install --require-hashes -r requirements/ci.txt
       # No --exit-zero anywhere: a lint error fails the build. The previous
       # workflow ran flake8 twice, the second time with --exit-zero, so lint
       # findings could never block a merge.
       - name: ruff check
-        run: poetry run ruff check --output-format=github .
+        run: ruff check --output-format=github .
       - name: ruff format
-        run: poetry run ruff format --check --diff .
+        run: ruff format --check --diff .
 
   types:
     name: Type check
@@ -70,10 +69,9 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: |
-          python -m pip install --upgrade pip poetry
-          poetry install --only dev --no-root
-          poetry run pip install -e .
-      - run: poetry run mypy --strict encryption_helper
+          python -m pip install --require-hashes -r requirements/ci.txt
+          python -m pip install -e .
+      - run: mypy --strict encryption_helper
 
   test:
     name: Test ${{ matrix.python-version }} on ${{ matrix.os }}
@@ -93,7 +91,8 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e . pytest pytest-cov hypothesis
+          python -m pip install --require-hashes -r requirements/ci.txt
+          python -m pip install -e .
       # The coverage gate (fail_under = 95, branch coverage) lives in
       # pyproject.toml so local and CI runs agree.
       - name: Test
@@ -116,7 +115,8 @@ jobs:
           cache: pip
       - name: Install the floor
         run: |
-          python -m pip install --upgrade pip tomli
+          python -m pip install --upgrade pip
+          python -m pip install --require-hashes -r requirements/ci.txt
           floor=$(python - <<'PY'
           import re, tomli
           deps = tomli.load(open("pyproject.toml", "rb"))["project"]["dependencies"]
@@ -125,7 +125,7 @@ jobs:
           PY
           )
           echo "Declared floor: cryptography==${floor}"
-          python -m pip install -e . pytest pytest-cov hypothesis "cryptography==${floor}"
+          python -m pip install -e . "cryptography==${floor}"
           python -c "import cryptography as c, sys; sys.exit(c.__version__ != '${floor}')"
       - name: Test
         run: pytest -q --no-cov
@@ -160,7 +160,9 @@ jobs:
           cache: pip
       # pytest-cov too: the shared pyproject.toml configures coverage, so the
       # `--no-cov` below is an unknown argument without the plugin installed.
-      - run: python -m pip install --upgrade pip -e . pytest pytest-cov ruff mypy
+      - run: |
+          python -m pip install --require-hashes -r requirements/ci.txt
+          python -m pip install -e .
       - run: ruff check packages/
       - run: ruff format --check packages/
       - run: mypy --strict packages/encryption-helper-mcp/encryption_helper_mcp
@@ -182,7 +184,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: python -m pip install --upgrade pip -e . pytest pytest-cov hypothesis
+      - run: |
+          python -m pip install --require-hashes -r requirements/ci.txt
+          python -m pip install -e .
       # Breaks twenty security properties on purpose and asserts some test
       # fails for each. A survivor means a property is asserted nowhere.
       # Coverage says lines were executed; this says the assertions bite.
@@ -277,7 +281,10 @@ jobs:
       # The same hash-locked tools the release uses, so CI builds the wheel
       # the way a release would.
       - run: python -m pip install --require-hashes -r requirements/release.txt
-      - run: python -m build
+      # The build backend from hashes too. An isolated build would fetch
+      # poetry-core from the index, unpinned, inside this very job.
+      - run: python -m pip install --require-hashes -r requirements/build-backend.txt
+      - run: python -m build --no-isolation
       - run: twine check --strict dist/*
       - name: Verify the type marker ships in the wheel
         run: |

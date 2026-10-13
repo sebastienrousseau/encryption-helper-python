@@ -1,0 +1,15 @@
+# Test, lint and type-check tools for the CI jobs, compiled with hashes into
+# ci.txt. Constrained to the versions in poetry.lock, so CI runs the tools a
+# developer's `poetry install` gives them; unpinned, an upstream release of
+# any of them could change a verdict or fail the build overnight.
+#
+# Unlike the other sets this one is compiled universally (every Python from
+# 3.10 and every OS), because the test matrix installs it on all of them.
+#
+# Regenerate with: python scripts/compile_requirements.py
+pytest
+pytest-cov
+hypothesis
+ruff
+mypy
+tomli
