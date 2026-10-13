@@ -14,6 +14,7 @@ the full table, and :mod:`._constants` the values):
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import logging
 import os
@@ -36,10 +37,10 @@ from ._constants import (
     EXIT_KEY_EXISTS,
 )
 from ._output import (
-    _configure_logging,
-    begin_output_mode,
+    _logging_configured,
     emit_error,
     json_requested,
+    output_mode,
     record_output_mode,
 )
 from ._parser import build_parser
@@ -126,14 +127,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         A process exit code. See the module docstring for their meanings.
     """
     arguments = sys.argv[1:] if argv is None else list(argv)
-    # Known before parsing, so a usage error argparse raises is reported in
-    # the requested format too; see JsonAwareParser.
-    begin_output_mode(json=json_requested(arguments))
-    parser = build_parser()
-    args = parser.parse_args(arguments)
-    record_output_mode(args)
-    _configure_logging(args)
+    # The output mode and logging are scoped to this call and undone on the
+    # way out, however it ends, so a host calling main() repeatedly gets
+    # each call's own flags. --json is known before parsing, so a usage
+    # error argparse raises is reported in the requested format too.
+    with output_mode(json=json_requested(arguments)):
+        args = build_parser().parse_args(arguments)
+        record_output_mode(args)
+        with _logging_configured(args):
+            return _dispatch(args)
 
+
+def _dispatch(args: argparse.Namespace) -> int:
+    """Run the selected command, mapping every failure to an exit code."""
     try:
         with _sigterm_unwinds():
             result: int = args.func(args)

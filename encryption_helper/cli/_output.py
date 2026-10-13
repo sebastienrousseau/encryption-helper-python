@@ -5,12 +5,14 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
 import sys
-from collections.abc import Sequence
-from dataclasses import dataclass
-from typing import Any, NoReturn
+from collections.abc import Iterator, Sequence
+from contextvars import ContextVar
+from dataclasses import dataclass, replace
+from typing import Any, Final, NoReturn
 
 from ._constants import (
     _STDIO,
@@ -43,62 +45,100 @@ class _VersionAction(argparse.Action):
         parser.exit()
 
 
-def _configure_logging(args: argparse.Namespace) -> None:
-    """Set up logging for the process from the parsed global flags."""
+#: Same layout ``basicConfig`` produced, so log lines look as they always did.
+_LOG_FORMAT: Final = "%(levelname)s %(name)s: %(message)s"
+
+
+def _log_level(args: argparse.Namespace) -> int:
+    """Map the parsed global flags to a log level."""
     if args.quiet:
-        level = logging.ERROR
-    elif args.log_level:
-        level = getattr(logging, args.log_level)
-    elif args.verbose >= 2:  # noqa: PLR2004 - -vv means debug
-        level = logging.DEBUG
-    elif args.verbose == 1:
-        level = logging.INFO
-    else:
-        level = logging.WARNING
-
-    logging.basicConfig(
-        level=level,
-        format="%(levelname)s %(name)s: %(message)s",
-        stream=sys.stderr,
-    )
+        return logging.ERROR
+    if args.log_level:
+        level: int = getattr(logging, args.log_level)
+        return level
+    if args.verbose >= 2:  # noqa: PLR2004 - -vv means debug
+        return logging.DEBUG
+    if args.verbose == 1:
+        return logging.INFO
+    return logging.WARNING
 
 
-@dataclass
+@contextlib.contextmanager
+def _logging_configured(args: argparse.Namespace) -> Iterator[None]:
+    """Log to stderr at the requested level for one invocation, then undo it.
+
+    This used ``logging.basicConfig``, which does nothing once the root
+    logger has a handler: a host calling :func:`~._main.main` twice kept the
+    first call's level, and a host with logging already set up never got
+    the level asked for at all. A dedicated handler is added instead, and
+    it and the root level are put back afterwards, so each call honours its
+    own flags and the host's configuration is left as it was. The root
+    logger is still process-wide, so concurrent calls from several threads
+    share one level -- the last to start wins until it finishes.
+    """
+    root = logging.getLogger()
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter(_LOG_FORMAT))
+    previous = root.level
+    root.addHandler(handler)
+    root.setLevel(_log_level(args))
+    try:
+        yield
+    finally:
+        root.removeHandler(handler)
+        root.setLevel(previous)
+        handler.close()
+
+
+@dataclass(frozen=True)
 class _OutputMode:
     """Whether JSON was requested, and for which command.
 
-    Held at module level because a failure can be reported from a layer that
-    has no access to the parsed arguments -- :func:`_fail_usage` is called
-    from deep inside argument validation. :func:`record_output_mode` sets it
-    once, immediately after parsing.
+    Needed by a layer that has no access to the parsed arguments --
+    :func:`_fail_usage` is called from deep inside argument validation, and
+    :class:`JsonAwareParser` before there are any parsed arguments at all.
     """
 
     json: bool = False
     command: str | None = None
 
 
-_mode = _OutputMode()
+#: The mode of the invocation in progress. A context variable rather than a
+#: module-level object, so it is scoped to one :func:`~._main.main` call:
+#: :func:`output_mode` resets it on the way out, and a thread or task
+#: running its own invocation sees its own value. Outside any call it is
+#: the default -- plain text.
+_mode: ContextVar[_OutputMode] = ContextVar(
+    "encryption_helper_cli_output_mode",
+    default=_OutputMode(),  # noqa: B039 - frozen, so it cannot be mutated
+)
+
+
+@contextlib.contextmanager
+def output_mode(*, json: bool) -> Iterator[None]:
+    """Scope the output mode to one invocation, starting from what is known.
+
+    Before parsing, only ``--json`` is known (see :func:`json_requested`),
+    and it is needed already, so an argument error is reported in the
+    requested format. :func:`record_output_mode` refines it once parsing
+    succeeds. Whatever was in effect before is restored on exit, however
+    the invocation ends.
+    """
+    token = _mode.set(_OutputMode(json=json))
+    try:
+        yield
+    finally:
+        _mode.reset(token)
 
 
 def record_output_mode(args: argparse.Namespace) -> None:
-    """Record the output mode so failures can be reported in the same format.
-
-    Both fields are always assigned, so a previous invocation in the same
-    process cannot leave the mode set.
-    """
-    _mode.json = bool(getattr(args, "json", False))
-    _mode.command = getattr(args, "command", None)
-
-
-def begin_output_mode(*, json: bool) -> None:
-    """Record the output mode known before parsing: ``--json``, no command.
-
-    Called first in :func:`~._main.main`, so an argument error is reported
-    in the requested format, and so nothing from a previous invocation in
-    the same process is still in effect while this one parses.
-    """
-    _mode.json = json
-    _mode.command = None
+    """Record the parsed output mode so failures are reported in that format."""
+    _mode.set(
+        _OutputMode(
+            json=bool(getattr(args, "json", False)),
+            command=getattr(args, "command", None),
+        )
+    )
 
 
 def runtime_version() -> str:
@@ -164,11 +204,11 @@ class JsonAwareParser(argparse.ArgumentParser):
 
     def error(self, message: str) -> NoReturn:
         """Report a parse failure, as JSON when that was requested."""
-        if not _mode.json:
+        if not _mode.get().json:
             super().error(message)
         # A subparser's prog is "<root> <command>"; naming the command lets
         # a consumer tell which invocation failed. The root parser has none.
-        _mode.command = self.prog.partition(" ")[2] or None
+        _mode.set(replace(_mode.get(), command=self.prog.partition(" ")[2] or None))
         _fail_usage(message)
 
 
@@ -203,10 +243,11 @@ def emit_error(message: str, exit_code: int) -> None:
     Always stderr, in both formats: a caller redirecting stdout to a file
     gets the data or nothing, never an error document mixed into it.
     """
-    if _mode.json:
+    mode = _mode.get()
+    if mode.json:
         _write_json(
             envelope(
-                _mode.command,
+                mode.command,
                 {
                     "code": ERROR_CODES.get(exit_code, "error"),
                     "message": message,

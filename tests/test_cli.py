@@ -657,12 +657,19 @@ class TestLoggingFlags:
     def test_verbosity_maps_to_a_level(self, tmp_path, argv, expected, monkeypatch):
         import logging as logging_module
 
+        from encryption_helper.cli import _commands
+
         captured = {}
+        real = _commands.generate
 
-        def fake_basic_config(**kwargs):
-            captured["level"] = logging_module.getLevelName(kwargs["level"])
+        def observing_generate(*args, **kwargs):
+            # The level in force while the command runs, not at some other
+            # moment: main() restores the previous level when it returns.
+            level = logging_module.getLogger().getEffectiveLevel()
+            captured["level"] = logging_module.getLevelName(level)
+            return real(*args, **kwargs)
 
-        monkeypatch.setattr(logging_module, "basicConfig", fake_basic_config)
+        monkeypatch.setattr(_commands, "generate", observing_generate)
         main(
             [
                 *argv,
