@@ -53,6 +53,7 @@ import logging
 
 from .crypto import decrypt, encrypt, is_valid_signature, sign, verify
 from .crypto.metadata import ContainerInfo, describe_container, is_container
+from .crypto.streaming import decrypt_stream, encrypt_stream
 from .errors import (
     DecryptionError,
     EncryptionHelperError,
@@ -146,10 +147,12 @@ __all__ = [
     "assess",
     "classify",
     "decrypt",
+    "decrypt_stream",
     "describe_container",
     "encode_private_key",
     "encode_public_key",
     "encrypt",
+    "encrypt_stream",
     "fingerprint_sha256",
     "generate",
     "generate_ecdsa",

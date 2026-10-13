@@ -7,8 +7,12 @@ memory, and peak usage measures at roughly four times the payload. That is
 appropriate for keys, credentials and documents, and unsuitable for a
 5 GB file.
 
-This module encrypts in fixed-size segments so memory stays bounded at a few
-hundred kilobytes regardless of input size.
+This module encrypts in fixed-size segments so memory stays bounded by the
+segment size, not the input size: about three segments at once, so roughly
+a megabyte at the default 256 KiB. The writer chooses the segment size and
+records it in the container, up to :data:`MAX_SEGMENT_SIZE`; a reader
+handling containers from untrusted sources can pass a lower
+``max_segment_size`` to :func:`decrypt_stream` to cap what it will allocate.
 
 Construction
 ------------
@@ -62,11 +66,11 @@ from .envelope import (
     _TAG_SIZE,
     AEAD_AES_256_GCM_STREAM,
     HEADER_STRUCT,
-    MAGIC,
-    VERSION,
+    _aad,
     _decapsulate,
     _encapsulate,
     _kem_for_public_key,
+    _pack_header,
     _parse_header,
 )
 
@@ -190,16 +194,14 @@ def encrypt_stream(  # noqa: PLR0913 - three of six are keyword-only options
     kem_id = _kem_for_public_key(public_key)
     content_key, encapsulation = _encapsulate(public_key, kem_id)
 
-    header = HEADER_STRUCT.pack(
-        MAGIC, VERSION, kem_id, AEAD_AES_256_GCM_STREAM, 0, len(encapsulation)
-    )
+    header = _pack_header(kem_id, AEAD_AES_256_GCM_STREAM, len(encapsulation))
     prefix = os.urandom(_PREFIX_SIZE)
     stream_header = _STREAM_HEADER_STRUCT.pack(segment_size) + prefix
 
     _write_all(destination, header + encapsulation + stream_header)
 
     aead = AESGCM(content_key)
-    aad = header + encapsulation + stream_header + associated_data
+    aad = _aad(header, encapsulation, stream_header, associated_data)
 
     total = 0
     number = 0
@@ -262,7 +264,8 @@ def _write_all(destination: IO[bytes], data: bytes) -> None:
     complete, as the previous single-call code did, so arbitrary file-like
     sinks that return nothing keep working.
     """
-    remaining = data
+    # A view, so each partial write advances without copying what is left.
+    remaining = memoryview(data)
     while remaining:
         written = destination.write(remaining)
         if written is None or written >= len(remaining):
@@ -311,13 +314,14 @@ def _parse_stream_header(
     return header, kem_id, encapsulation, stream_header, segment_size, prefix
 
 
-def decrypt_stream(
+def decrypt_stream(  # noqa: PLR0913 - three of six are keyword-only options
     private_key: PrivateKeyTypes,
     source: IO[bytes],
     destination: IO[bytes],
     *,
     associated_data: bytes = b"",
     progress: ProgressCallback | None = None,
+    max_segment_size: int = MAX_SEGMENT_SIZE,
 ) -> int:
     """Decrypt a streaming container into ``destination`` in bounded memory.
 
@@ -335,6 +339,10 @@ def decrypt_stream(
         associated_data: The same value given to :func:`encrypt_stream`.
         progress: Optional callback invoked with the cumulative plaintext byte
             count after each authenticated segment.
+        max_segment_size: Largest segment size to accept from the container.
+            The writer chooses it, and the reader holds about three segments
+            at once, so a container from an untrusted source can make this
+            call allocate up to three times this much. Lower it to cap that.
 
     Returns:
         The number of plaintext bytes written.
@@ -359,10 +367,16 @@ def decrypt_stream(
     header, kem_id, encapsulation, stream_header, segment_size, prefix = (
         _parse_stream_header(source)
     )
+    if segment_size > max_segment_size:
+        msg = (
+            f"Container declares {segment_size}-byte segments, above the "
+            f"{max_segment_size}-byte limit this reader accepts."
+        )
+        raise DecryptionError(msg)
 
     content_key = _decapsulate(private_key, kem_id, encapsulation)
     aead = AESGCM(content_key)
-    aad = header + encapsulation + stream_header + associated_data
+    aad = _aad(header, encapsulation, stream_header, associated_data)
 
     sealed_size = segment_size + _TAG_SIZE
     total = 0

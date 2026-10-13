@@ -207,6 +207,11 @@ def _require_acceptable_rsa(public_key: rsa.RSAPublicKey) -> None:
         raise InvalidArgumentError(msg)
 
 
+def _pack_header(kem_id: int, aead_id: int, encapsulation_length: int) -> bytes:
+    """Build a container header. The one writer of the layout both readers parse."""
+    return HEADER_STRUCT.pack(MAGIC, VERSION, kem_id, aead_id, 0, encapsulation_length)
+
+
 def _aad(header: bytes, encapsulation: bytes, nonce: bytes, extra: bytes) -> bytes:
     """Build the associated data binding the framing to the ciphertext.
 
@@ -427,9 +432,7 @@ def encrypt(
     content_key, encapsulation = _encapsulate(public_key, kem_id)
 
     nonce = os.urandom(_NONCE_SIZE)
-    header = HEADER_STRUCT.pack(
-        MAGIC, VERSION, kem_id, AEAD_AES_256_GCM, 0, len(encapsulation)
-    )
+    header = _pack_header(kem_id, AEAD_AES_256_GCM, len(encapsulation))
     ciphertext = AESGCM(content_key).encrypt(
         nonce, plaintext, _aad(header, encapsulation, nonce, associated_data)
     )

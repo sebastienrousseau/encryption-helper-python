@@ -278,6 +278,37 @@ class TestSegmentSizeValidation:
             )
 
 
+class TestReaderSegmentCap:
+    """The writer picks the segment size; a reader may refuse to allocate it."""
+
+    def test_a_segment_above_the_cap_is_refused_before_any_output(self, x25519_key):
+        blob = seal(x25519_key, b"x" * 10, segment_size=SEGMENT * 2)
+        out = io.BytesIO()
+        with pytest.raises(DecryptionError, match="limit this reader accepts"):
+            decrypt_stream(
+                x25519_key, io.BytesIO(bytes(blob)), out, max_segment_size=SEGMENT
+            )
+        assert out.getvalue() == b""
+
+    def test_a_segment_at_the_cap_is_accepted(self, x25519_key):
+        blob = seal(x25519_key, b"x" * (SEGMENT + 1), segment_size=SEGMENT)
+        plaintext = open_sealed(x25519_key, bytes(blob), max_segment_size=SEGMENT)
+        assert plaintext == b"x" * (SEGMENT + 1)
+
+    def test_the_default_cap_is_the_format_maximum(self):
+        import inspect
+
+        default = inspect.signature(decrypt_stream).parameters["max_segment_size"]
+        assert default.default == MAX_SEGMENT_SIZE
+
+    def test_streaming_is_part_of_the_public_api(self):
+        import encryption_helper
+
+        assert encryption_helper.encrypt_stream is encrypt_stream
+        assert encryption_helper.decrypt_stream is decrypt_stream
+        assert {"encrypt_stream", "decrypt_stream"} <= set(encryption_helper.__all__)
+
+
 class TestKeyTypeValidation:
     @pytest.mark.parametrize("fixture", ["ed25519_key", "mldsa_key", "ecdsa_key"])
     def test_signing_keys_cannot_encrypt_a_stream(self, request, fixture):
