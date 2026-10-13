@@ -15,6 +15,9 @@ Exit codes:
 3    A destination file already exists and ``--force`` was not given.
 4    Decryption or signature verification failed.
 5    ``scan --fail-on-finding`` found material needing attention.
+141  Standard output was closed by its reader before the output was
+     complete (128 + SIGPIPE, as a shell reports it). Nothing is
+     printed; the status alone says the output was truncated.
 ===  ============================================================
 
 Passphrases are never accepted as a command-line value. Process arguments are
@@ -33,6 +36,7 @@ from __future__ import annotations
 
 from ._constants import (
     DEFAULT_MAX_INPUT_BYTES,
+    EXIT_BROKEN_PIPE,
     EXIT_CRYPTO_FAILURE,
     EXIT_ERROR,
     EXIT_FINDINGS,
@@ -47,6 +51,7 @@ from ._parser import build_parser
 
 __all__ = [
     "DEFAULT_MAX_INPUT_BYTES",
+    "EXIT_BROKEN_PIPE",
     "EXIT_CRYPTO_FAILURE",
     "EXIT_ERROR",
     "EXIT_FINDINGS",

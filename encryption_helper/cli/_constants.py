@@ -20,6 +20,13 @@ EXIT_CRYPTO_FAILURE: Final = 4
 #: from "the scanner failed": the run itself succeeded, and its JSON result
 #: is a normal ``status: ok`` document.
 EXIT_FINDINGS: Final = 5
+#: The reader of stdout went away before the output was complete -- the
+#: ``head -c 10`` in ``decrypt big | head -c 10``. 128 + SIGPIPE (13), the
+#: status a shell reports for a process killed by that signal, so ``set -o
+#: pipefail`` sees the truncation. It used to exit 0, which reported a
+#: partial plaintext as a complete one. Nothing is written to stderr: the
+#: consumer closed the pipe on purpose, and the status says what happened.
+EXIT_BROKEN_PIPE: Final = 141
 
 #: Version of the ``--json`` output contract.
 #:

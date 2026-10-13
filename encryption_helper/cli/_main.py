@@ -1,6 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2024-2026 HSBC Group Management Services Limited
-"""Process entry point: parse, dispatch, map errors to exit codes."""
+"""Process entry point: parse, dispatch, map errors to exit codes.
+
+Exit codes (the package docstring of :mod:`encryption_helper.cli` holds
+the full table, and :mod:`._constants` the values):
+
+* 0 success; 1 error; 2 usage; 3 destination exists; 4 decryption or
+  verification failed; 5 ``scan --fail-on-finding`` found something;
+* 141 (:data:`~._constants.EXIT_BROKEN_PIPE`) -- stdout was closed by its
+  reader before the output was complete, following the shell's 128 +
+  SIGPIPE convention so a pipeline using ``pipefail`` notices.
+"""
 
 from __future__ import annotations
 
@@ -19,10 +29,10 @@ from ..errors import (
     SignatureVerificationError,
 )
 from ._constants import (
+    EXIT_BROKEN_PIPE,
     EXIT_CRYPTO_FAILURE,
     EXIT_ERROR,
     EXIT_KEY_EXISTS,
-    EXIT_OK,
 )
 from ._output import (
     _configure_logging,
@@ -120,9 +130,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         with _sigterm_unwinds():
             result: int = args.func(args)
-    except BrokenPipeError:  # pragma: no cover - depends on the consumer
-        # A downstream `head` closing the pipe is not an error.
-        os._exit(EXIT_OK)
+    except BrokenPipeError:  # pragma: no cover - runs in a subprocess under test
+        # A downstream `head` closing the pipe is not this tool failing, so
+        # nothing is printed -- but the output *was* cut short, and exiting
+        # 0 told `set -o pipefail` that a truncated plaintext was complete.
+        # os._exit skips the interpreter's final flush of stdout, which
+        # would hit the same closed pipe and print "Exception ignored".
+        os._exit(EXIT_BROKEN_PIPE)
     except KeyboardInterrupt:  # pragma: no cover - interactive only
         emit_error("interrupted", EXIT_ERROR)
         return EXIT_ERROR
