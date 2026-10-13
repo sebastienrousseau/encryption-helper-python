@@ -240,6 +240,27 @@ def _read_message(source: IO[str]) -> str | None:
     return line
 
 
+def _handle_line(root: Path, line: str) -> dict[str, Any] | None:
+    """Decode one message and dispatch it; a line that will not decode is one error.
+
+    ``json.loads`` raises more than :class:`json.JSONDecodeError`: nesting
+    deeper than the interpreter stack raises :class:`RecursionError`, and an
+    integer longer than :func:`sys.get_int_max_str_digits` raises a plain
+    :class:`ValueError`. Both used to escape :func:`serve` and end the
+    process, so one message well inside :data:`MAX_MESSAGE_BYTES` stopped
+    the server for every later call.
+    """
+    try:
+        message = json.loads(line)
+    except json.JSONDecodeError as exc:
+        return _error(None, PARSE_ERROR, f"Invalid JSON: {exc.msg}.")
+    except (ValueError, RecursionError):
+        return _error(
+            None, PARSE_ERROR, "Invalid JSON: too deeply nested or too large."
+        )
+    return dispatch(root, message)
+
+
 def serve(
     root: Path, source: IO[str] | None = None, sink: IO[str] | None = None
 ) -> int:
@@ -266,10 +287,7 @@ def serve(
         elif not line.strip():
             continue
         else:
-            try:
-                response = dispatch(root, json.loads(line))
-            except json.JSONDecodeError as exc:
-                response = _error(None, PARSE_ERROR, f"Invalid JSON: {exc.msg}.")
+            response = _handle_line(root, line)
         if response is None:
             continue
         sink.write(json.dumps(response) + "\n")

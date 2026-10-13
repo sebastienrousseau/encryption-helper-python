@@ -23,7 +23,12 @@ from encryption_helper.keys.load import MAX_KEY_FILE_BYTES
 
 from encryption_helper_mcp import _tools
 from encryption_helper_mcp._tools import MAX_SCAN_LIMIT, ToolError, call
-from encryption_helper_mcp.server import INVALID_REQUEST, MAX_MESSAGE_BYTES, serve
+from encryption_helper_mcp.server import (
+    INVALID_REQUEST,
+    MAX_MESSAGE_BYTES,
+    PARSE_ERROR,
+    serve,
+)
 
 posix_only = pytest.mark.skipif(
     sys.platform == "win32", reason="FIFOs and O_NOFOLLOW are POSIX"
@@ -146,3 +151,36 @@ class TestMessageLimit:
         sink = io.StringIO()
         serve(tmp_path, io.StringIO(line), sink)
         assert json.loads(sink.getvalue())["error"]["code"] == INVALID_REQUEST
+
+
+class TestUndecodableMessages:
+    """A line the decoder cannot finish must cost one error, not the session.
+
+    ``json.loads`` raises more than ``JSONDecodeError``: nesting deeper than
+    the interpreter's stack raises ``RecursionError``, and an integer longer
+    than ``sys.get_int_max_str_digits()`` raises ``ValueError``. Either one
+    used to escape ``serve()`` and end the process, so a single message --
+    well inside the size limit -- stopped the server for every later call.
+    """
+
+    PING = json.dumps({"jsonrpc": "2.0", "id": 9, "method": "ping"}) + "\n"
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            '{"jsonrpc": "2.0", "id": 1, "method": "ping", "params": '
+            + "[" * 200_000
+            + "\n",
+            '{"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {"n": '
+            + "9" * 5000
+            + "}}\n",
+        ],
+        ids=["deep-nesting", "huge-integer"],
+    )
+    def test_the_session_survives_and_answers_the_next_call(self, tmp_path, line):
+        sink = io.StringIO()
+        serve(tmp_path, io.StringIO(line + self.PING), sink)
+        first, second = (json.loads(out) for out in sink.getvalue().splitlines())
+        assert first["error"]["code"] == PARSE_ERROR
+        assert first["id"] is None
+        assert second == {"jsonrpc": "2.0", "id": 9, "result": {}}
